@@ -2,6 +2,7 @@ import os
 import httpx
 from typing import List, Dict, Any, Optional
 from .base import BaseLanguageModel
+from openai import OpenAI
 
 class LMStudioModel(BaseLanguageModel):
     """
@@ -17,7 +18,8 @@ class LMStudioModel(BaseLanguageModel):
             api_base: Base URL for the LM Studio API
         """
         self.api_base = api_base
-        self.client = httpx.AsyncClient(timeout=60.0)
+        # Replace httpx client with OpenAI client
+        self.client = OpenAI(base_url=self.api_base, api_key="not-needed")
 
     async def generate(self, 
                       prompt: str, 
@@ -34,33 +36,58 @@ class LMStudioModel(BaseLanguageModel):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
             
-        # Add previous context messages if provided
+        # Add previous context messages if provided, ensuring they follow the alternating pattern
         if context:
-            messages.extend(context)
+            # If we have context, we need to validate it follows the user/assistant alternating pattern
+            # or construct a valid conversation history
+            
+            # Check if the context already has the proper alternating pattern
+            valid_context = True
+            expected_roles = ["user", "assistant"] * (len(context) // 2 + 1)
+            
+            for i, msg in enumerate(context):
+                if i < len(expected_roles) and msg.get("role") != expected_roles[i]:
+                    valid_context = False
+                    break
+                # Also check if role is missing or undefined
+                if "role" not in msg or msg.get("role") is None:
+                    valid_context = False
+                    break
+            
+            if valid_context:
+                messages.extend(context)
+            else:
+                # If context doesn't have proper alternating pattern, reconstruct it
+                current_role = "user"
+                for msg in context:
+                    if "content" in msg and msg.get("content") is not None:
+                        messages.append({"role": current_role, "content": msg.get("content", "")})
+                        # Toggle between user and assistant
+                        current_role = "assistant" if current_role == "user" else "user"
             
         # Add the current prompt
         messages.append({"role": "user", "content": prompt})
         
-        payload = {
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": False
-        }
-        
         try:
-            response = await self.client.post(
-                f"{self.api_base}/chat/completions", 
-                json=payload
-            )
-            response.raise_for_status()
-            result = response.json()
+            # Use async version of the OpenAI client if available, otherwise use synchronous version
+            try:
+                # For newer versions of the OpenAI client that support async
+                chat_completion = await self.client.chat.completions.create(
+                    messages=messages,
+                    model="local-model", # LM Studio doesn't need a specific model name
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+            except (TypeError, AttributeError):
+                # Fallback for older versions or if async is not supported
+                chat_completion = self.client.chat.completions.create(
+                    messages=messages,
+                    model="local-model", # LM Studio doesn't need a specific model name
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
             
-            # Extract the generated text from the response
-            if "choices" in result and len(result["choices"]) > 0:
-                return result["choices"][0]["message"]["content"]
-            else:
-                return "No response generated"
+            return chat_completion.choices[0].message.content
         except Exception as e:
             return f"Error generating response with LM Studio: {str(e)}"
             

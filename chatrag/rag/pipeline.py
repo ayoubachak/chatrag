@@ -21,6 +21,7 @@ class RAGPipeline:
         self.document_loader = DocumentLoader()
         self.embedding_generator = EmbeddingGenerator()
         self.vector_store = VectorStore()
+        self.last_filepath = None  # Track the filepath the pipeline was loaded from
         
     async def process_file(self, file_path: str) -> int:
         """
@@ -86,15 +87,21 @@ class RAGPipeline:
         
         return results
         
-    async def save(self) -> str:
+    async def save(self, filepath: Optional[str] = None) -> str:
         """
         Save the current state of the RAG pipeline.
         
+        Args:
+            filepath: Optional path to save to. If None, uses the last loaded path or generates a new one.
+            
         Returns:
             Path to the saved vector store
         """
-        filepath = await self.vector_store.save()
+        # Use the provided filepath, or the one we loaded from, or let vector_store generate one
+        save_filepath = filepath or self.last_filepath
+        filepath = await self.vector_store.save(save_filepath)
         rag_logger.info(f"Saved RAG pipeline to {filepath} with {len(self.vector_store.embeddings)} embeddings")
+        self.last_filepath = filepath  # Update the last filepath
         return filepath
         
     @classmethod
@@ -112,6 +119,7 @@ class RAGPipeline:
         
         # Create a new instance
         pipeline = cls()
+        pipeline.last_filepath = filepath  # Store the filepath it was loaded from
         
         try:
             # Check if the file exists
@@ -121,11 +129,12 @@ class RAGPipeline:
                 
             # Load the vector store
             pipeline.vector_store = await VectorStore.load(filepath)
-            rag_logger.info(f"Loaded vector store with {len(pipeline.vector_store.embeddings)} embeddings")
             
             # Verify the vector store has embeddings
-            if not pipeline.vector_store.embeddings:
+            if not hasattr(pipeline.vector_store, 'embeddings') or len(pipeline.vector_store.embeddings) == 0:
                 rag_logger.warning(f"Loaded vector store has no embeddings")
+            else:
+                rag_logger.info(f"Successfully loaded RAG pipeline with {len(pipeline.vector_store.embeddings)} embeddings")
                 
         except Exception as e:
             rag_logger.error(f"Error loading vector store: {str(e)}", exc_info=True)
