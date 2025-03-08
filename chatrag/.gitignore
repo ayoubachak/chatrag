@@ -1,0 +1,6 @@
+.env
+*.pyc
+*.pkl
+uploads/
+vectore_store/
+*.log
