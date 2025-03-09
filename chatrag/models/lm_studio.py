@@ -1,10 +1,11 @@
 import os
 import httpx
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
 from .base import BaseLanguageModel
 from openai import OpenAI
 from .utils import format_chat_history
+import asyncio
 
 logger = logging.getLogger("lm_studio_model")
 
@@ -69,6 +70,47 @@ class LMStudioModel(BaseLanguageModel):
             logger.error(f"Error generating response with LM Studio: {str(e)}", exc_info=True)
             return f"Error generating response with LM Studio: {str(e)}"
             
+    async def generate_stream(self, 
+                           prompt: str, 
+                           system_prompt: Optional[str] = None,
+                           temperature: float = 0.7,
+                           max_tokens: int = 1024,
+                           context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response using the LM Studio API.
+        """
+        try:
+            # Format messages using our utility function
+            messages = format_chat_history(
+                messages=context or [],
+                system_prompt=system_prompt,
+                current_prompt=prompt
+            )
+            
+            logger.debug(f"Sending {len(messages)} messages to LM Studio API (streaming)")
+            
+            # Use streaming API - don't await the stream creation
+            stream = self.client.chat.completions.create(
+                messages=messages,
+                model="local-model", # LM Studio doesn't need a specific model name
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True
+            )
+            
+            # Yield each chunk as it arrives - iterate over it directly
+            for chunk in stream:
+                if hasattr(chunk.choices[0], 'delta') and hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
+                    content = chunk.choices[0].delta.content
+                    logger.debug(f"Streaming chunk: {content}")
+                    yield content
+                    # Small pause to allow for cooperative multitasking
+                    await asyncio.sleep(0)
+                    
+        except Exception as e:
+            logger.error(f"Error generating streaming response with LM Studio: {str(e)}", exc_info=True)
+            yield f"Error generating streaming response with LM Studio: {str(e)}"
+
     async def generate_with_rag(self,
                               prompt: str,
                               documents: List[str],
@@ -77,40 +119,31 @@ class LMStudioModel(BaseLanguageModel):
                               max_tokens: int = 1024,
                               context: Optional[List[Dict[str, Any]]] = None) -> str:
         """
-        Generate a response with RAG-enhanced context.
+        Generate text with RAG context using the LM Studio API.
         """
         try:
             # Format messages using our utility function
             messages = format_chat_history(
                 messages=context or [],
-                system_prompt=None,  # We'll handle the system prompt separately
-                current_prompt=None  # We'll handle the prompt separately
+                system_prompt=system_prompt,
+                current_prompt=prompt
             )
             
-            # Create a RAG-specific system prompt
-            rag_system_prompt = system_prompt or "You are a helpful assistant. Answer the question based on the provided context."
-            
-            # Format the retrieved documents
-            context_str = "\n\n".join([f"Document {i+1}:\n{doc}" for i, doc in enumerate(documents)])
-            
-            # Combine system prompt and RAG context
-            enhanced_system_prompt = f"{rag_system_prompt}\n\nContext:\n{context_str}\n\nAnswer the following question based on the provided context."
-            
-            # Add system message at the beginning
-            if not messages or messages[0]["role"] != "system":
-                messages.insert(0, {"role": "system", "content": enhanced_system_prompt})
+            # Add retrieved documents to the system prompt
+            if system_prompt:
+                system_message = messages[0]
+                documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+                system_message["content"] = f"{system_message['content']}\n\nRelevant context:\n{documents_text}"
             else:
-                messages[0]["content"] = enhanced_system_prompt
-                
-            # Add the user prompt as the last message
-            if messages and messages[-1]["role"] == "user":
-                # If the last message is from the user, append to it
-                messages[-1]["content"] += f"\n\nQuestion: {prompt}"
-            else:
-                # Otherwise add as a new message
-                messages.append({"role": "user", "content": f"Question: {prompt}"})
+                # If no system prompt, add documents as a system message
+                documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+                system_message = {
+                    "role": "system",
+                    "content": f"You are a helpful assistant. Use the following information to answer the user's question:\n\n{documents_text}"
+                }
+                messages.insert(0, system_message)
             
-            logger.debug(f"Sending {len(messages)} RAG-enhanced messages to LM Studio API")
+            logger.debug(f"Sending {len(messages)} messages to LM Studio API with RAG")
             
             # Use async version of the OpenAI client if available, otherwise use synchronous version
             try:
@@ -136,3 +169,59 @@ class LMStudioModel(BaseLanguageModel):
         except Exception as e:
             logger.error(f"Error generating RAG response with LM Studio: {str(e)}", exc_info=True)
             return f"Error generating RAG response with LM Studio: {str(e)}"
+            
+    async def generate_with_rag_stream(self,
+                                    prompt: str,
+                                    documents: List[str],
+                                    system_prompt: Optional[str] = None,
+                                    temperature: float = 0.7,
+                                    max_tokens: int = 1024,
+                                    context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response with RAG context using the LM Studio API.
+        """
+        try:
+            # Format messages using our utility function
+            messages = format_chat_history(
+                messages=context or [],
+                system_prompt=system_prompt,
+                current_prompt=prompt
+            )
+            
+            # Add retrieved documents to the system prompt
+            if system_prompt:
+                system_message = messages[0]
+                documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+                system_message["content"] = f"{system_message['content']}\n\nRelevant context:\n{documents_text}"
+            else:
+                # If no system prompt, add documents as a system message
+                documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+                system_message = {
+                    "role": "system",
+                    "content": f"You are a helpful assistant. Use the following information to answer the user's question:\n\n{documents_text}"
+                }
+                messages.insert(0, system_message)
+            
+            logger.debug(f"Sending {len(messages)} messages to LM Studio API with RAG (streaming)")
+            
+            # Use streaming API - don't await the stream creation
+            stream = self.client.chat.completions.create(
+                messages=messages,
+                model="local-model", # LM Studio doesn't need a specific model name
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True
+            )
+            
+            # Yield each chunk as it arrives - iterate over it directly
+            for chunk in stream:
+                if hasattr(chunk.choices[0], 'delta') and hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
+                    content = chunk.choices[0].delta.content
+                    logger.debug(f"Streaming RAG chunk: {content}")
+                    yield content
+                    # Small pause to allow for cooperative multitasking
+                    await asyncio.sleep(0)
+                    
+        except Exception as e:
+            logger.error(f"Error generating streaming RAG response with LM Studio: {str(e)}", exc_info=True)
+            yield f"Error generating streaming RAG response with LM Studio: {str(e)}"

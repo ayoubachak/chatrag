@@ -8,3 +8,4 @@ vectore_store/
 *.sqlite3
 *.json
 *.index
+data/

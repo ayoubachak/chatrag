@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, AsyncGenerator
 import logging
 import torch
 from .base import BaseLanguageModel
@@ -98,41 +98,224 @@ class LocalModel(BaseLanguageModel):
                         "max_new_tokens": min(max_tokens, 512),  # Limit tokens on CPU
                         "temperature": temperature,
                         "do_sample": temperature > 0,
-                        "top_p": 0.95,
-                        "top_k": 50,
+                        "top_p": 0.9,
                         "repetition_penalty": 1.1,
-                        "pad_token_id": self.tokenizer.eos_token_id,
-                        "use_cache": True,
+                        "pad_token_id": self.tokenizer.eos_token_id
                     }
                 else:
-                    # GPU-optimized parameters
+                    # GPU parameters (can be more aggressive)
                     generation_config = {
                         "max_new_tokens": max_tokens,
                         "temperature": temperature,
                         "do_sample": temperature > 0,
-                        "top_p": 0.95,
-                        "top_k": 50,
+                        "top_p": 0.9,
                         "repetition_penalty": 1.1,
+                        "pad_token_id": self.tokenizer.eos_token_id
                     }
                 
-                # Generate tokens
+                # Log generation start
                 start_time = time.time()
-                output = self.model.generate(
+                self.logger.info(f"Starting generation with {generation_config['max_new_tokens']} max tokens")
+                
+                # Generate the response
+                outputs = self.model.generate(
                     **inputs,
                     **generation_config
                 )
-                end_time = time.time()
                 
-                self.logger.info(f"Generation took {end_time - start_time:.2f} seconds")
+                # Log generation time
+                generation_time = time.time() - start_time
+                self.logger.info(f"Generation completed in {generation_time:.2f} seconds")
                 
-            # Decode the output
-            generated_text = self.tokenizer.decode(output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-            
-            return generated_text.strip()
-            
+                # Decode the response
+                response = self.tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+                
+                return response
+                
         except Exception as e:
-            self.logger.error(f"Error generating text: {str(e)}", exc_info=True)
+            self.logger.error(f"Error generating response: {str(e)}", exc_info=True)
             return f"Error generating response: {str(e)}"
+            
+    async def generate_stream(self, 
+                           prompt: str, 
+                           system_prompt: Optional[str] = None,
+                           temperature: float = 0.7,
+                           max_tokens: int = 1024,
+                           context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response using the local model.
+        """
+        # Ensure model is loaded
+        if not await self.load_model():
+            yield "Error: Failed to load model. Please check logs for details."
+            return
+        
+        try:
+            # Format the messages using our utility function
+            messages = format_chat_history(
+                messages=context or [], 
+                system_prompt=system_prompt,
+                current_prompt=prompt
+            )
+            
+            # Convert messages to the format expected by the model
+            prompt_text = self.tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
+            )
+            
+            self.logger.debug(f"Formatted prompt for streaming: {prompt_text[:200]}...")
+            
+            # Tokenize the prompt
+            inputs = self.tokenizer(prompt_text, return_tensors="pt").to(self.model.device)
+            
+            # Check if we're running on CPU or GPU
+            is_cpu = self.model.device.type == "cpu"
+            
+            # Set generation parameters based on device
+            if is_cpu:
+                # CPU-optimized parameters (more conservative)
+                generation_config = {
+                    "max_new_tokens": min(max_tokens, 512),  # Limit tokens on CPU
+                    "temperature": temperature,
+                    "do_sample": temperature > 0,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.1,
+                    "pad_token_id": self.tokenizer.eos_token_id
+                }
+            else:
+                # GPU parameters (can be more aggressive)
+                generation_config = {
+                    "max_new_tokens": max_tokens,
+                    "temperature": temperature,
+                    "do_sample": temperature > 0,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.1,
+                    "pad_token_id": self.tokenizer.eos_token_id
+                }
+            
+            # Log generation start
+            start_time = time.time()
+            self.logger.info(f"Starting streaming generation with {generation_config['max_new_tokens']} max tokens")
+            
+            # Simpler approach: use the model's built-in streaming capability if available
+            try:
+                # Check if the model supports streaming
+                if hasattr(self.model, 'generate_with_streaming') or hasattr(self.model.generate, 'with_streaming'):
+                    # Use the model's built-in streaming capability
+                    self.logger.info("Using model's built-in streaming capability")
+                    
+                    # Create a streamer
+                    from transformers import TextIteratorStreamer
+                    streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
+                    
+                    # Start generation in a separate thread
+                    generation_kwargs = {
+                        "input_ids": inputs.input_ids,
+                        "streamer": streamer,
+                        **generation_config
+                    }
+                    
+                    import threading
+                    thread = threading.Thread(target=self.model.generate, kwargs=generation_kwargs)
+                    thread.start()
+                    
+                    # Yield from the streamer
+                    for text in streamer:
+                        self.logger.debug(f"Streaming chunk: {text}")
+                        yield text
+                        await asyncio.sleep(0.01)
+                    
+                    # Wait for the thread to finish
+                    thread.join()
+                    
+                    # Log generation time
+                    generation_time = time.time() - start_time
+                    self.logger.info(f"Streaming generation completed in {generation_time:.2f} seconds")
+                    return
+            except Exception as e:
+                self.logger.warning(f"Built-in streaming failed, falling back to token-by-token: {str(e)}")
+                # Fall back to token-by-token generation
+            
+            # Stream the response using token-by-token generation
+            input_length = inputs.input_ids.shape[1]
+            generated_tokens = []
+            
+            with torch.no_grad():
+                # Initial input
+                current_input = inputs.input_ids
+                past_key_values = None
+                
+                for _ in range(generation_config["max_new_tokens"]):
+                    # Generate next token
+                    outputs = self.model(
+                        input_ids=current_input if past_key_values is None else current_input[:, -1:],
+                        past_key_values=past_key_values,
+                        use_cache=True,
+                    )
+                    
+                    # Get logits and past key values
+                    logits = outputs.logits
+                    past_key_values = outputs.past_key_values
+                    
+                    # Apply temperature if needed
+                    if generation_config["do_sample"] and generation_config["temperature"] > 0:
+                        logits = logits / generation_config["temperature"]
+                    
+                    # Apply top_p sampling if needed
+                    if generation_config["do_sample"] and generation_config.get("top_p", 1.0) < 1.0:
+                        sorted_logits, sorted_indices = torch.sort(logits[:, -1, :], descending=True)
+                        cumulative_probs = torch.cumsum(torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
+                        
+                        # Remove tokens with cumulative probability above the threshold
+                        sorted_indices_to_remove = cumulative_probs > generation_config["top_p"]
+                        # Shift the indices to the right to keep also the first token above the threshold
+                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                        sorted_indices_to_remove[..., 0] = 0
+                        
+                        # Scatter sorted tensors to original indexing
+                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                        logits[:, -1, :][indices_to_remove] = -float("Inf")
+                    
+                    # Apply repetition penalty
+                    if generation_config.get("repetition_penalty", 1.0) > 1.0:
+                        for i in range(current_input.shape[0]):
+                            for token_idx in set(current_input[i].tolist()):
+                                logits[i, -1, token_idx] /= generation_config["repetition_penalty"]
+                    
+                    # Sample next token
+                    if generation_config["do_sample"]:
+                        probs = torch.nn.functional.softmax(logits[:, -1, :], dim=-1)
+                        next_token = torch.multinomial(probs, num_samples=1)
+                    else:
+                        next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+                    
+                    # Check if we've reached the end token
+                    if next_token.item() == self.tokenizer.eos_token_id:
+                        break
+                    
+                    # Add token to generated sequence
+                    generated_tokens.append(next_token.item())
+                    
+                    # Update input for next iteration
+                    current_input = torch.cat([current_input, next_token], dim=1)
+                    
+                    # Decode the new token and yield it
+                    new_token_text = self.tokenizer.decode([next_token.item()], skip_special_tokens=True)
+                    if new_token_text:  # Only yield non-empty text
+                        self.logger.debug(f"Streaming token: {new_token_text}")
+                        yield new_token_text
+                        # Small delay to avoid overwhelming the client
+                        await asyncio.sleep(0.01)
+            
+            # Log generation time
+            generation_time = time.time() - start_time
+            self.logger.info(f"Streaming generation completed in {generation_time:.2f} seconds")
+                
+        except Exception as e:
+            self.logger.error(f"Error in streaming generation: {str(e)}", exc_info=True)
+            yield f"Error in streaming generation: {str(e)}"
 
     async def generate_with_rag(self,
                               prompt: str,
@@ -152,32 +335,23 @@ class LocalModel(BaseLanguageModel):
             # Format the messages using our utility function
             messages = format_chat_history(
                 messages=context or [], 
-                system_prompt=None,  # We'll handle the system prompt separately
-                current_prompt=None  # We'll handle the prompt separately
+                system_prompt=system_prompt,
+                current_prompt=prompt
             )
             
-            # Create a RAG-specific system prompt if none provided
-            rag_system_prompt = system_prompt or "You are a helpful assistant. Answer the question based on the provided context. If the context doesn't contain relevant information, say so."
-                
-            # Format the retrieved documents
-            context_str = "\n\n".join([f"Document {i+1}:\n{doc}" for i, doc in enumerate(documents)])
-            
-            # Combine system prompt and RAG context
-            enhanced_system_prompt = f"{rag_system_prompt}\n\nContext:\n{context_str}"
-            
-            # Add system message at the beginning
-            if not messages or messages[0]["role"] != "system":
-                messages.insert(0, {"role": "system", "content": enhanced_system_prompt})
+            # Add retrieved documents to the system prompt
+            if system_prompt:
+                system_message = messages[0]
+                documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+                system_message["content"] = f"{system_message['content']}\n\nRelevant context:\n{documents_text}"
             else:
-                messages[0]["content"] = enhanced_system_prompt
-                
-            # Add the user prompt as the last message
-            if messages and messages[-1]["role"] == "user":
-                # If the last message is from the user, append to it
-                messages[-1]["content"] += f"\n\nQuestion: {prompt}"
-            else:
-                # Otherwise add as a new message
-                messages.append({"role": "user", "content": f"Question: {prompt}"})
+                # If no system prompt, add documents as a system message
+                documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+                system_message = {
+                    "role": "system",
+                    "content": f"You are a helpful assistant. Use the following information to answer the user's question:\n\n{documents_text}"
+                }
+                messages.insert(0, system_message)
             
             # Convert messages to the format expected by the model
             prompt_text = self.tokenizer.apply_chat_template(
@@ -203,38 +377,236 @@ class LocalModel(BaseLanguageModel):
                         "max_new_tokens": min(max_tokens, 512),  # Limit tokens on CPU
                         "temperature": temperature,
                         "do_sample": temperature > 0,
-                        "top_p": 0.95,
-                        "top_k": 50,
+                        "top_p": 0.9,
                         "repetition_penalty": 1.1,
-                        "pad_token_id": self.tokenizer.eos_token_id,
-                        "use_cache": True,
+                        "pad_token_id": self.tokenizer.eos_token_id
                     }
                 else:
-                    # GPU-optimized parameters
+                    # GPU parameters (can be more aggressive)
                     generation_config = {
                         "max_new_tokens": max_tokens,
                         "temperature": temperature,
                         "do_sample": temperature > 0,
-                        "top_p": 0.95,
-                        "top_k": 50,
+                        "top_p": 0.9,
                         "repetition_penalty": 1.1,
+                        "pad_token_id": self.tokenizer.eos_token_id
                     }
                 
-                # Generate tokens
+                # Log generation start
                 start_time = time.time()
-                output = self.model.generate(
+                self.logger.info(f"Starting RAG generation with {generation_config['max_new_tokens']} max tokens")
+                
+                # Generate the response
+                outputs = self.model.generate(
                     **inputs,
                     **generation_config
                 )
-                end_time = time.time()
                 
-                self.logger.info(f"RAG generation took {end_time - start_time:.2f} seconds")
+                # Log generation time
+                generation_time = time.time() - start_time
+                self.logger.info(f"RAG generation completed in {generation_time:.2f} seconds")
                 
-            # Decode the output
-            generated_text = self.tokenizer.decode(output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
-            
-            return generated_text.strip()
-            
+                # Decode the response
+                response = self.tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+                
+                return response
+                
         except Exception as e:
-            self.logger.error(f"Error generating RAG text: {str(e)}", exc_info=True)
+            self.logger.error(f"Error generating RAG response: {str(e)}", exc_info=True)
             return f"Error generating RAG response: {str(e)}"
+            
+    async def generate_with_rag_stream(self,
+                                    prompt: str,
+                                    documents: List[str],
+                                    system_prompt: Optional[str] = None,
+                                    temperature: float = 0.7,
+                                    max_tokens: int = 1024,
+                                    context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response with RAG context using the local model.
+        """
+        # Ensure model is loaded
+        if not await self.load_model():
+            yield "Error: Failed to load model. Please check logs for details."
+            return
+        
+        try:
+            # Format the messages using our utility function
+            messages = format_chat_history(
+                messages=context or [], 
+                system_prompt=system_prompt,
+                current_prompt=prompt
+            )
+            
+            # Add retrieved documents to the system prompt
+            if system_prompt:
+                system_message = messages[0]
+                documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+                system_message["content"] = f"{system_message['content']}\n\nRelevant context:\n{documents_text}"
+            else:
+                # If no system prompt, add documents as a system message
+                documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+                system_message = {
+                    "role": "system",
+                    "content": f"You are a helpful assistant. Use the following information to answer the user's question:\n\n{documents_text}"
+                }
+                messages.insert(0, system_message)
+            
+            # Convert messages to the format expected by the model
+            prompt_text = self.tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
+            )
+            
+            self.logger.debug(f"Formatted RAG prompt for streaming: {prompt_text[:200]}...")
+            
+            # Tokenize the prompt
+            inputs = self.tokenizer(prompt_text, return_tensors="pt").to(self.model.device)
+            
+            # Check if we're running on CPU or GPU
+            is_cpu = self.model.device.type == "cpu"
+            
+            # Set generation parameters based on device
+            if is_cpu:
+                # CPU-optimized parameters (more conservative)
+                generation_config = {
+                    "max_new_tokens": min(max_tokens, 512),  # Limit tokens on CPU
+                    "temperature": temperature,
+                    "do_sample": temperature > 0,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.1,
+                    "pad_token_id": self.tokenizer.eos_token_id
+                }
+            else:
+                # GPU parameters (can be more aggressive)
+                generation_config = {
+                    "max_new_tokens": max_tokens,
+                    "temperature": temperature,
+                    "do_sample": temperature > 0,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.1,
+                    "pad_token_id": self.tokenizer.eos_token_id
+                }
+            
+            # Log generation start
+            start_time = time.time()
+            self.logger.info(f"Starting streaming RAG generation with {generation_config['max_new_tokens']} max tokens")
+            
+            # Simpler approach: use the model's built-in streaming capability if available
+            try:
+                # Check if the model supports streaming
+                if hasattr(self.model, 'generate_with_streaming') or hasattr(self.model.generate, 'with_streaming'):
+                    # Use the model's built-in streaming capability
+                    self.logger.info("Using model's built-in streaming capability for RAG")
+                    
+                    # Create a streamer
+                    from transformers import TextIteratorStreamer
+                    streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
+                    
+                    # Start generation in a separate thread
+                    generation_kwargs = {
+                        "input_ids": inputs.input_ids,
+                        "streamer": streamer,
+                        **generation_config
+                    }
+                    
+                    import threading
+                    thread = threading.Thread(target=self.model.generate, kwargs=generation_kwargs)
+                    thread.start()
+                    
+                    # Yield from the streamer
+                    for text in streamer:
+                        self.logger.debug(f"Streaming RAG chunk: {text}")
+                        yield text
+                        await asyncio.sleep(0.01)
+                    
+                    # Wait for the thread to finish
+                    thread.join()
+                    
+                    # Log generation time
+                    generation_time = time.time() - start_time
+                    self.logger.info(f"Streaming RAG generation completed in {generation_time:.2f} seconds")
+                    return
+            except Exception as e:
+                self.logger.warning(f"Built-in streaming failed for RAG, falling back to token-by-token: {str(e)}")
+                # Fall back to token-by-token generation
+            
+            # Stream the response using token-by-token generation
+            input_length = inputs.input_ids.shape[1]
+            generated_tokens = []
+            
+            with torch.no_grad():
+                # Initial input
+                current_input = inputs.input_ids
+                past_key_values = None
+                
+                for _ in range(generation_config["max_new_tokens"]):
+                    # Generate next token
+                    outputs = self.model(
+                        input_ids=current_input if past_key_values is None else current_input[:, -1:],
+                        past_key_values=past_key_values,
+                        use_cache=True,
+                    )
+                    
+                    # Get logits and past key values
+                    logits = outputs.logits
+                    past_key_values = outputs.past_key_values
+                    
+                    # Apply temperature if needed
+                    if generation_config["do_sample"] and generation_config["temperature"] > 0:
+                        logits = logits / generation_config["temperature"]
+                    
+                    # Apply top_p sampling if needed
+                    if generation_config["do_sample"] and generation_config.get("top_p", 1.0) < 1.0:
+                        sorted_logits, sorted_indices = torch.sort(logits[:, -1, :], descending=True)
+                        cumulative_probs = torch.cumsum(torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
+                        
+                        # Remove tokens with cumulative probability above the threshold
+                        sorted_indices_to_remove = cumulative_probs > generation_config["top_p"]
+                        # Shift the indices to the right to keep also the first token above the threshold
+                        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                        sorted_indices_to_remove[..., 0] = 0
+                        
+                        # Scatter sorted tensors to original indexing
+                        indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                        logits[:, -1, :][indices_to_remove] = -float("Inf")
+                    
+                    # Apply repetition penalty
+                    if generation_config.get("repetition_penalty", 1.0) > 1.0:
+                        for i in range(current_input.shape[0]):
+                            for token_idx in set(current_input[i].tolist()):
+                                logits[i, -1, token_idx] /= generation_config["repetition_penalty"]
+                    
+                    # Sample next token
+                    if generation_config["do_sample"]:
+                        probs = torch.nn.functional.softmax(logits[:, -1, :], dim=-1)
+                        next_token = torch.multinomial(probs, num_samples=1)
+                    else:
+                        next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+                    
+                    # Check if we've reached the end token
+                    if next_token.item() == self.tokenizer.eos_token_id:
+                        break
+                    
+                    # Add token to generated sequence
+                    generated_tokens.append(next_token.item())
+                    
+                    # Update input for next iteration
+                    current_input = torch.cat([current_input, next_token], dim=1)
+                    
+                    # Decode the new token and yield it
+                    new_token_text = self.tokenizer.decode([next_token.item()], skip_special_tokens=True)
+                    if new_token_text:  # Only yield non-empty text
+                        self.logger.debug(f"Streaming RAG token: {new_token_text}")
+                        yield new_token_text
+                        # Small delay to avoid overwhelming the client
+                        await asyncio.sleep(0.01)
+            
+            # Log generation time
+            generation_time = time.time() - start_time
+            self.logger.info(f"Streaming RAG generation completed in {generation_time:.2f} seconds")
+                
+        except Exception as e:
+            self.logger.error(f"Error in streaming RAG generation: {str(e)}", exc_info=True)
+            yield f"Error in streaming RAG generation: {str(e)}"

@@ -173,41 +173,109 @@ async def process_chat_message(connection_id: str, data: Dict):
     max_tokens = data.get("max_tokens", 1024)
     rag_type = data.get("rag_type", "basic")  # Get RAG type from request or use default
     chunking_strategy = data.get("chunking_strategy", "basic")  # Get chunking strategy from request or use default
+    use_streaming = data.get("use_streaming", False)  # Get streaming preference
     
-    chat_logger.info(f"Processing chat message from user {connection_id}: '{prompt[:50]}...' (use_rag={use_rag}, model={model_type}, rag_type={rag_type}, chunking_strategy={chunking_strategy})")
+    chat_logger.info(f"Processing chat message from user {connection_id}: '{prompt[:50]}...' (use_rag={use_rag}, model={model_type}, rag_type={rag_type}, chunking_strategy={chunking_strategy}, streaming={use_streaming})")
     
     # Initialize RAG pipeline for this specific request if needed
     rag_pipeline = None
     
     if use_rag:
-        # Load the RAG pipeline from the user's session
-        rag_session = connection_manager.get_user_rag_session(connection_id)
-        user_rag_type = connection_manager.get_user_rag_type(connection_id)
-        user_chunking_strategy = connection_manager.get_user_chunking_strategy(connection_id)
+        # Get the user's RAG session path
+        vector_store_path = connection_manager.get_user_rag_session(connection_id)
+        chat_logger.info(f"RAG session path for {connection_id}: {vector_store_path}")
         
-        # Use the user's stored settings if available, otherwise use the ones from the request
-        rag_type = user_rag_type if user_rag_type else rag_type
-        chunking_strategy = user_chunking_strategy if user_chunking_strategy else chunking_strategy
-        
-        if rag_session:
+        if not vector_store_path:
+            # No RAG session, create a default one
+            from rag.pipeline import create_default_rag_pipeline
+            
+            # Create a default RAG pipeline
             try:
-                chat_logger.info(f"Loading RAG session for user {connection_id} from path: {rag_session} with type: {rag_type} and chunking strategy: {chunking_strategy}")
-                rag_pipeline = await RAGPipeline.load(rag_session, vector_store_type=rag_type, chunking_strategy=chunking_strategy)
-                chat_logger.info(f"Loaded RAG pipeline with type: {rag_type} and chunking strategy: {chunking_strategy}")
+                # Extract the user ID from the connection ID (format: user_id:session)
+                user_id = connection_id.split(":")[0] if ":" in connection_id else connection_id
+                
+                chat_logger.info(f"Creating default RAG pipeline for user {user_id} with type {rag_type}")
+                rag_pipeline = await create_default_rag_pipeline(
+                    user_id=user_id,
+                    rag_type=rag_type,
+                    chunking_strategy=chunking_strategy
+                )
+                
+                # Store the RAG session path
+                connection_manager.set_user_rag_session(
+                    connection_id, 
+                    rag_pipeline.vector_store_path,
+                    rag_type,
+                    chunking_strategy
+                )
+                
+                chat_logger.info(f"Created default RAG pipeline for user {connection_id} with type {rag_type} at path {rag_pipeline.vector_store_path}")
             except Exception as e:
-                chat_logger.error(f"Error loading RAG session: {str(e)}", exc_info=True)
-                # Create a new pipeline if loading fails
-                rag_pipeline = RAGPipeline(vector_store_type=rag_type, chunking_strategy=chunking_strategy)
+                error_message = f"Error creating RAG pipeline: {str(e)}"
+                chat_logger.error(error_message, exc_info=True)
+                await connection_manager.send_message(
+                    connection_id,
+                    {
+                        "type": "error",
+                        "error": error_message,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+                return
         else:
-            # Create a new pipeline if no session exists
-            chat_logger.info(f"No RAG session found for user {connection_id}, creating new pipeline with type: {rag_type} and chunking strategy: {chunking_strategy}")
-            rag_pipeline = RAGPipeline(vector_store_type=rag_type, chunking_strategy=chunking_strategy)
-    
-    # Get conversation history (if provided)
-    raw_context = data.get("context", [])
-    
-    # Format the conversation history properly for the LLM
-    context = format_chat_history(raw_context, system_prompt=None)
+            # Use existing RAG session
+            from rag.pipeline import load_rag_pipeline
+            
+            # Get the RAG type and chunking strategy for this user
+            user_rag_type = connection_manager.get_user_rag_type(connection_id)
+            user_chunking_strategy = connection_manager.get_user_chunking_strategy(connection_id)
+            
+            # If the requested RAG type or chunking strategy is different, update it
+            if rag_type != user_rag_type or chunking_strategy != user_chunking_strategy:
+                chat_logger.info(f"Updating RAG settings for user {connection_id}: type={rag_type}, chunking={chunking_strategy}")
+                connection_manager.set_user_rag_session(
+                    connection_id, 
+                    vector_store_path,
+                    rag_type,
+                    chunking_strategy
+                )
+            
+            # Load the RAG pipeline
+            try:
+                chat_logger.info(f"Loading RAG pipeline from {vector_store_path} with type {rag_type}")
+                rag_pipeline = await load_rag_pipeline(
+                    vector_store_path=vector_store_path,
+                    rag_type=rag_type,
+                    chunking_strategy=chunking_strategy
+                )
+                
+                # Debug information about the loaded pipeline
+                if rag_type == "basic" and hasattr(rag_pipeline.vector_store, 'embeddings'):
+                    chat_logger.info(f"Loaded basic vector store with {len(rag_pipeline.vector_store.embeddings)} embeddings")
+                elif rag_type == "faiss" and hasattr(rag_pipeline.vector_store, 'index') and rag_pipeline.vector_store.index is not None:
+                    chat_logger.info(f"Loaded FAISS vector store with {rag_pipeline.vector_store.index.ntotal} vectors")
+                elif rag_type == "chroma" and hasattr(rag_pipeline.vector_store, 'collection'):
+                    try:
+                        count = rag_pipeline.vector_store.collection.count()
+                        has_documents = count > 0
+                        chat_logger.info(f"Loaded ChromaDB vector store with {count} documents")
+                    except Exception as e:
+                        chat_logger.warning(f"Error checking ChromaDB document count: {str(e)}")
+                        has_documents = False
+                
+                chat_logger.info(f"Loaded RAG pipeline for user {connection_id} with type {rag_type}")
+            except Exception as e:
+                error_message = f"Error loading RAG pipeline: {str(e)}"
+                chat_logger.error(error_message, exc_info=True)
+                await connection_manager.send_message(
+                    connection_id,
+                    {
+                        "type": "error",
+                        "error": error_message,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+                return
     
     # Get the appropriate model
     try:
@@ -236,49 +304,147 @@ async def process_chat_message(connection_id: str, data: Dict):
     )
     
     try:
+        # Get chat history from the request
+        context = data.get("context", [])
+        
         # Generate response
         sources = []
+        message_id = f"assistant-{uuid.uuid4()}"
+        
         if use_rag and rag_pipeline:
             # Query the RAG system
             chat_logger.info(f"Using RAG ({rag_type}) for query: '{prompt[:50]}...'")
             
             # Check if vector store has documents (different check for each type)
             has_documents = False
-            if rag_type == "basic" and hasattr(rag_pipeline.vector_store, 'document_count'):
-                has_documents = rag_pipeline.vector_store.document_count > 0
-            elif rag_type == "faiss" and rag_pipeline.vector_store.index is not None:
+            if rag_type == "basic" and hasattr(rag_pipeline.vector_store, 'embeddings'):
+                has_documents = len(rag_pipeline.vector_store.embeddings) > 0
+                chat_logger.info(f"Basic vector store has {len(rag_pipeline.vector_store.embeddings)} embeddings")
+            elif rag_type == "faiss" and hasattr(rag_pipeline.vector_store, 'index') and rag_pipeline.vector_store.index is not None:
                 has_documents = rag_pipeline.vector_store.index.ntotal > 0
-            elif rag_type == "chroma":
+                chat_logger.info(f"FAISS vector store has {rag_pipeline.vector_store.index.ntotal} vectors")
+            elif rag_type == "chroma" and hasattr(rag_pipeline.vector_store, 'collection'):
                 try:
-                    has_documents = rag_pipeline.vector_store.collection.count() > 0
-                except:
-                    has_documents = False
-            elif rag_type == "hybrid":
-                try:
-                    has_documents = rag_pipeline.vector_store.document_count > 0
-                except:
+                    count = rag_pipeline.vector_store.collection.count()
+                    has_documents = count > 0
+                    chat_logger.info(f"ChromaDB vector store has {count} documents")
+                except Exception as e:
+                    chat_logger.warning(f"Error checking ChromaDB document count: {str(e)}")
                     has_documents = False
             
             # Skip RAG if no documents are available
             if not has_documents:
-                chat_logger.warning(f"No documents available in the {rag_type} vector store, falling back to standard response")
+                chat_logger.warning(f"No documents in {rag_type} vector store, skipping RAG")
                 await connection_manager.send_message(
                     connection_id,
                     {
                         "type": "warning",
-                        "message": f"No document embeddings found in {rag_type} store. Using standard response instead.",
+                        "message": "No documents available for RAG. Please upload documents first.",
                         "timestamp": datetime.now().isoformat()
                     }
                 )
-                response = await model.generate(
-                    prompt=prompt,
-                    system_prompt=system_prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    context=context
-                )
+                
+                # Fall back to regular generation
+                if use_streaming:
+                    # Generate streaming response without RAG
+                    chat_logger.info(f"Generating streaming response without RAG using {model_type} model")
+                    
+                    # Send initial message to establish the message in the UI
+                    await connection_manager.send_message(
+                        connection_id,
+                        {
+                            "type": "message_start",
+                            "role": "assistant",
+                            "id": message_id,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
+                    
+                    # Stream the response
+                    full_response = ""
+                    try:
+                        # Use async for to handle the async generator
+                        generator = model.generate_stream(
+                            prompt=prompt,
+                            system_prompt=system_prompt,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            context=context
+                        )
+                        
+                        # Manually iterate through the generator
+                        while True:
+                            try:
+                                # Get the next chunk
+                                chunk = await generator.__anext__()
+                                if chunk:  # Only send non-empty chunks
+                                    full_response += chunk
+                                    await connection_manager.send_message(
+                                        connection_id,
+                                        {
+                                            "type": "message_chunk",
+                                            "id": message_id,
+                                            "chunk": chunk,
+                                            "timestamp": datetime.now().isoformat()
+                                        }
+                                    )
+                            except StopAsyncIteration:
+                                # End of generator
+                                break
+                            except Exception as chunk_error:
+                                chat_logger.error(f"Error processing chunk: {str(chunk_error)}", exc_info=True)
+                                break
+                    except Exception as stream_error:
+                        chat_logger.error(f"Error during streaming: {str(stream_error)}", exc_info=True)
+                        # If streaming fails, send what we have so far
+                        if not full_response:
+                            # If we have nothing, generate a non-streaming response as fallback
+                            chat_logger.info(f"Streaming failed, falling back to non-streaming response")
+                            full_response = await model.generate(
+                                prompt=prompt,
+                                system_prompt=system_prompt,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                context=context
+                            )
+                    
+                    # Send message completion
+                    await connection_manager.send_message(
+                        connection_id,
+                        {
+                            "type": "message_complete",
+                            "id": message_id,
+                            "content": full_response,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
+                    
+                    chat_logger.info(f"Completed streaming response for user {connection_id}")
+                else:
+                    # Generate non-streaming response without RAG
+                    chat_logger.info(f"Generating response without RAG using {model_type} model")
+                    response = await model.generate(
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        context=context
+                    )
+                    
+                    # Send the complete response
+                    await connection_manager.send_message(
+                        connection_id,
+                        {
+                            "type": "message",
+                            "content": response,
+                            "role": "assistant",
+                            "id": message_id,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
             else:
                 try:
+                    chat_logger.info(f"Querying RAG pipeline with prompt: '{prompt[:50]}...'")
                     retrieved_docs = await rag_pipeline.query(prompt, top_k=5)
                     chat_logger.info(f"Retrieved {len(retrieved_docs)} documents from {rag_type} RAG")
                     
@@ -289,21 +455,6 @@ async def process_chat_message(connection_id: str, data: Dict):
                     for i, doc in enumerate(retrieved_docs):
                         chat_logger.debug(f"Retrieved document {i+1}: Score {doc['score']:.4f}, Content: '{doc['content'][:50]}...'")
                     
-                    # Generate response with RAG context
-                    chat_logger.info(f"Generating response with RAG using {model_type} model")
-                    response = await model.generate_with_rag(
-                        prompt=prompt,
-                        documents=doc_contents,
-                        system_prompt=system_prompt,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        context=context
-                    )
-                    
-                    # Check if response is valid
-                    if not response or not isinstance(response, str):
-                        raise ValueError(f"Invalid response from {model_type} model with RAG: {response}")
-                    
                     # Include retrieved documents in response metadata
                     sources = [
                         {
@@ -313,16 +464,212 @@ async def process_chat_message(connection_id: str, data: Dict):
                         }
                         for doc in retrieved_docs
                     ]
+                    
+                    if use_streaming:
+                        # Generate streaming response with RAG
+                        chat_logger.info(f"Generating streaming response with RAG using {model_type} model")
+                        
+                        # Send initial message to establish the message in the UI
+                        await connection_manager.send_message(
+                            connection_id,
+                            {
+                                "type": "message_start",
+                                "role": "assistant",
+                                "id": message_id,
+                                "metadata": {"sources": sources},
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
+                        
+                        # Stream the response
+                        full_response = ""
+                        try:
+                            # Use async for to handle the async generator
+                            generator = model.generate_with_rag_stream(
+                                prompt=prompt,
+                                documents=doc_contents,
+                                system_prompt=system_prompt,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                context=context
+                            )
+                            
+                            # Manually iterate through the generator
+                            while True:
+                                try:
+                                    # Get the next chunk
+                                    chunk = await generator.__anext__()
+                                    if chunk:  # Only send non-empty chunks
+                                        full_response += chunk
+                                        await connection_manager.send_message(
+                                            connection_id,
+                                            {
+                                                "type": "message_chunk",
+                                                "id": message_id,
+                                                "chunk": chunk,
+                                                "timestamp": datetime.now().isoformat()
+                                            }
+                                        )
+                                except StopAsyncIteration:
+                                    # End of generator
+                                    break
+                                except Exception as chunk_error:
+                                    chat_logger.error(f"Error processing RAG chunk: {str(chunk_error)}", exc_info=True)
+                                    break
+                        except Exception as stream_error:
+                            chat_logger.error(f"Error during RAG streaming: {str(stream_error)}", exc_info=True)
+                            # If streaming fails, send what we have so far
+                            if not full_response:
+                                # If we have nothing, generate a non-streaming response as fallback
+                                chat_logger.info(f"RAG streaming failed, falling back to non-streaming response")
+                                full_response = await model.generate_with_rag(
+                                    prompt=prompt,
+                                    documents=doc_contents,
+                                    system_prompt=system_prompt,
+                                    temperature=temperature,
+                                    max_tokens=max_tokens,
+                                    context=context
+                                )
+                        
+                        # Send message completion
+                        await connection_manager.send_message(
+                            connection_id,
+                            {
+                                "type": "message_complete",
+                                "id": message_id,
+                                "content": full_response,
+                                "metadata": {"sources": sources},
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
+                        
+                        chat_logger.info(f"Completed streaming RAG response for user {connection_id}")
+                    else:
+                        # Generate non-streaming response with RAG
+                        chat_logger.info(f"Generating response with RAG using {model_type} model")
+                        response = await model.generate_with_rag(
+                            prompt=prompt,
+                            documents=doc_contents,
+                            system_prompt=system_prompt,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            context=context
+                        )
+                        
+                        # Check if response is valid
+                        if not response or not isinstance(response, str):
+                            raise ValueError(f"Invalid response from {model_type} model with RAG: {response}")
+                        
+                        # Send the complete response
+                        await connection_manager.send_message(
+                            connection_id,
+                            {
+                                "type": "message",
+                                "content": response,
+                                "role": "assistant",
+                                "id": message_id,
+                                "metadata": {"sources": sources},
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
                 except Exception as e:
                     chat_logger.error(f"Error in RAG processing with {model_type} model: {str(e)}", exc_info=True)
                     # Fallback to non-RAG response
-                    response = await model.generate(
-                        prompt=prompt,
-                        system_prompt=system_prompt,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        context=context
-                    )
+                    if use_streaming:
+                        # Generate streaming response without RAG as fallback
+                        chat_logger.info(f"Falling back to streaming response without RAG")
+                        
+                        # Send initial message to establish the message in the UI
+                        await connection_manager.send_message(
+                            connection_id,
+                            {
+                                "type": "message_start",
+                                "role": "assistant",
+                                "id": message_id,
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
+                        
+                        # Stream the response
+                        full_response = ""
+                        try:
+                            # Use async for to handle the async generator
+                            generator = model.generate_stream(
+                                prompt=prompt,
+                                system_prompt=system_prompt,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                context=context
+                            )
+                            
+                            # Manually iterate through the generator
+                            while True:
+                                try:
+                                    # Get the next chunk
+                                    chunk = await generator.__anext__()
+                                    if chunk:  # Only send non-empty chunks
+                                        full_response += chunk
+                                        await connection_manager.send_message(
+                                            connection_id,
+                                            {
+                                                "type": "message_chunk",
+                                                "id": message_id,
+                                                "chunk": chunk,
+                                                "timestamp": datetime.now().isoformat()
+                                            }
+                                        )
+                                except StopAsyncIteration:
+                                    # End of generator
+                                    break
+                                except Exception as chunk_error:
+                                    chat_logger.error(f"Error processing fallback chunk: {str(chunk_error)}", exc_info=True)
+                                    break
+                        except Exception as stream_error:
+                            chat_logger.error(f"Error during fallback streaming: {str(stream_error)}", exc_info=True)
+                            # If streaming fails, send what we have so far
+                            if not full_response:
+                                # If we have nothing, generate a non-streaming response as fallback
+                                chat_logger.info(f"Fallback streaming failed, using non-streaming response")
+                                full_response = await model.generate(
+                                    prompt=prompt,
+                                    system_prompt=system_prompt,
+                                    temperature=temperature,
+                                    max_tokens=max_tokens,
+                                    context=context
+                                )
+                        
+                        # Send message completion
+                        await connection_manager.send_message(
+                            connection_id,
+                            {
+                                "type": "message_complete",
+                                "id": message_id,
+                                "content": full_response,
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
+                    else:
+                        # Generate non-streaming response without RAG as fallback
+                        response = await model.generate(
+                            prompt=prompt,
+                            system_prompt=system_prompt,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            context=context
+                        )
+                        
+                        # Send the complete response
+                        await connection_manager.send_message(
+                            connection_id,
+                            {
+                                "type": "message",
+                                "content": response,
+                                "role": "assistant",
+                                "id": message_id,
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
+                    
                     await connection_manager.send_message(
                         connection_id,
                         {
@@ -333,65 +680,130 @@ async def process_chat_message(connection_id: str, data: Dict):
                     )
         else:
             # Generate response without RAG
-            chat_logger.info(f"Generating response without RAG using {model_type} model")
-            response = await model.generate(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                context=context
-            )
-            
-        chat_logger.info(f"Generated response for user {connection_id}: '{response[:50]}...'")
-            
-        # Send the response
-        try:
-            chat_logger.info(f"Sending response to user {connection_id}")
-            await connection_manager.send_message(
-                connection_id,
-                {
-                    "type": "message",
-                    "content": response,
-                    "role": "assistant",
-                    "id": f"assistant-{uuid.uuid4()}",
-                    "metadata": {"sources": sources} if sources else {},
-                    "timestamp": datetime.now().isoformat()
-                }
-            )
-            chat_logger.info(f"Response sent successfully to user {connection_id}")
-        except Exception as e:
-            chat_logger.error(f"Failed to send response to user {connection_id}: {str(e)}", exc_info=True)
-            # Try one more time after a short delay
-            try:
-                await asyncio.sleep(0.5)
+            if use_streaming:
+                # Generate streaming response without RAG
+                chat_logger.info(f"Generating streaming response without RAG using {model_type} model")
+                
+                # Send initial message to establish the message in the UI
                 await connection_manager.send_message(
                     connection_id,
                     {
-                        "type": "message",
-                        "content": response,
+                        "type": "message_start",
                         "role": "assistant",
-                        "id": f"assistant-{uuid.uuid4()}",
-                        "metadata": {"sources": sources} if sources else {},
+                        "id": message_id,
                         "timestamp": datetime.now().isoformat()
                     }
                 )
-                chat_logger.info(f"Response sent successfully on retry to user {connection_id}")
-            except Exception as retry_error:
-                chat_logger.error(f"Failed to send response on retry to user {connection_id}: {str(retry_error)}", exc_info=True)
-        
-        # Save the RAG pipeline if it was used
-        if use_rag and rag_pipeline:
-            try:
-                # Save to the user's RAG session
-                vector_store_path = await rag_pipeline.save()
-                connection_manager.set_user_rag_session(connection_id, vector_store_path, rag_type, chunking_strategy)
-                chat_logger.info(f"Saved RAG pipeline to {vector_store_path} with {rag_pipeline.vector_store.document_count} documents")
-            except Exception as e:
-                chat_logger.error(f"Error saving RAG session: {str(e)}", exc_info=True)
-            
+                
+                # Stream the response
+                full_response = ""
+                try:
+                    # Use async for to handle the async generator
+                    generator = model.generate_stream(
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        context=context
+                    )
+                    
+                    # Manually iterate through the generator
+                    while True:
+                        try:
+                            # Get the next chunk
+                            chunk = await generator.__anext__()
+                            if chunk:  # Only send non-empty chunks
+                                full_response += chunk
+                                await connection_manager.send_message(
+                                    connection_id,
+                                    {
+                                        "type": "message_chunk",
+                                        "id": message_id,
+                                        "chunk": chunk,
+                                        "timestamp": datetime.now().isoformat()
+                                    }
+                                )
+                        except StopAsyncIteration:
+                            # End of generator
+                            break
+                        except Exception as chunk_error:
+                            chat_logger.error(f"Error processing chunk: {str(chunk_error)}", exc_info=True)
+                            break
+                except Exception as stream_error:
+                    chat_logger.error(f"Error during streaming: {str(stream_error)}", exc_info=True)
+                    # If streaming fails, send what we have so far
+                    if not full_response:
+                        # If we have nothing, generate a non-streaming response as fallback
+                        chat_logger.info(f"Streaming failed, falling back to non-streaming response")
+                        full_response = await model.generate(
+                            prompt=prompt,
+                            system_prompt=system_prompt,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                            context=context
+                        )
+                
+                # Send message completion
+                await connection_manager.send_message(
+                    connection_id,
+                    {
+                        "type": "message_complete",
+                        "id": message_id,
+                        "content": full_response,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+                
+                chat_logger.info(f"Completed streaming response for user {connection_id}")
+            else:
+                # Generate non-streaming response without RAG
+                chat_logger.info(f"Generating response without RAG using {model_type} model")
+                response = await model.generate(
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    context=context
+                )
+                
+                chat_logger.info(f"Generated response for user {connection_id}: '{response[:50]}...'")
+                
+                # Send the complete response
+                try:
+                    chat_logger.info(f"Sending response to user {connection_id}")
+                    await connection_manager.send_message(
+                        connection_id,
+                        {
+                            "type": "message",
+                            "content": response,
+                            "role": "assistant",
+                            "id": message_id,
+                            "metadata": {"sources": sources} if sources else {},
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
+                    chat_logger.info(f"Response sent successfully to user {connection_id}")
+                except Exception as e:
+                    chat_logger.error(f"Failed to send response to user {connection_id}: {str(e)}", exc_info=True)
+                    # Try one more time after a short delay
+                    try:
+                        await asyncio.sleep(0.5)
+                        await connection_manager.send_message(
+                            connection_id,
+                            {
+                                "type": "message",
+                                "content": response,
+                                "role": "assistant",
+                                "id": message_id,
+                                "metadata": {"sources": sources} if sources else {},
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
+                        chat_logger.info(f"Response sent successfully on retry to user {connection_id}")
+                    except Exception as retry_error:
+                        chat_logger.error(f"Failed to send response on retry to user {connection_id}: {str(retry_error)}", exc_info=True)
     except Exception as e:
-        # Send error message
-        error_message = f"Error generating response: {str(e)}"
+        error_message = f"Error processing message: {str(e)}"
         chat_logger.error(error_message, exc_info=True)
         await connection_manager.send_message(
             connection_id,
@@ -401,7 +813,7 @@ async def process_chat_message(connection_id: str, data: Dict):
                 "timestamp": datetime.now().isoformat()
             }
         )
-    finally:
+        
         # Stop typing indicator
         await connection_manager.send_message(
             connection_id,

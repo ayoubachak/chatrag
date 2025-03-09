@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
 
 
 class BaseLanguageModel(ABC):
@@ -51,5 +51,51 @@ class BaseLanguageModel(ABC):
             
         Returns:
             The generated text response
+        """
+        pass
+        
+    @abstractmethod
+    async def generate_stream(self, 
+                           prompt: str, 
+                           system_prompt: Optional[str] = None,
+                           temperature: float = 0.7,
+                           max_tokens: int = 1024,
+                           context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response based on the prompt and optional context.
+        
+        Args:
+            prompt: The user's message to respond to
+            system_prompt: Optional system prompt to guide the model
+            temperature: Controls randomness (higher = more random)
+            max_tokens: Maximum number of tokens to generate
+            context: Optional list of previous messages for context
+            
+        Returns:
+            An async generator yielding chunks of the generated text response
+        """
+        pass
+    
+    @abstractmethod
+    async def generate_with_rag_stream(self,
+                                    prompt: str,
+                                    documents: List[str],
+                                    system_prompt: Optional[str] = None,
+                                    temperature: float = 0.7,
+                                    max_tokens: int = 1024,
+                                    context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response with RAG-enhanced context.
+        
+        Args:
+            prompt: The user's message to respond to
+            documents: List of retrieved document snippets to include as context
+            system_prompt: Optional system prompt to guide the model
+            temperature: Controls randomness (higher = more random)
+            max_tokens: Maximum number of tokens to generate
+            context: Optional list of previous messages for context
+            
+        Returns:
+            An async generator yielding chunks of the generated text response
         """
         pass

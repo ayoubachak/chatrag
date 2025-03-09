@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional, Union, Literal
 import os
+import uuid
 from pathlib import Path
 
 from .document_loader import DocumentLoader
@@ -11,6 +12,8 @@ from .chroma_retriever import ChromaVectorStore
 from .hybrid_retriever import HybridVectorStore
 from .logger import rag_logger
 
+# Define the default vector store directory
+DEFAULT_VECTOR_STORE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "vector_stores")
 
 class RAGPipeline:
     """
@@ -53,6 +56,7 @@ class RAGPipeline:
             
         rag_logger.info(f"Using {chunking_strategy} chunking strategy")
         self.last_filepath = None  # Track the filepath the pipeline was loaded from
+        self.vector_store_path = None  # Path to the vector store
         
     def set_chunking_strategy(self, strategy: Literal["basic", "super"]):
         """
@@ -143,6 +147,7 @@ class RAGPipeline:
         filepath = await self.vector_store.save(save_filepath)
         rag_logger.info(f"Saved RAG pipeline to {filepath}")
         self.last_filepath = filepath  # Update the last filepath
+        self.vector_store_path = filepath  # Update the vector store path
         return filepath
         
     @classmethod
@@ -163,6 +168,7 @@ class RAGPipeline:
         # Create a new instance with the specified vector store type and chunking strategy
         pipeline = cls(vector_store_type=vector_store_type, chunking_strategy=chunking_strategy)
         pipeline.last_filepath = filepath  # Store the filepath it was loaded from
+        pipeline.vector_store_path = filepath  # Store the vector store path
         
         try:
             # Check if the file exists
@@ -185,3 +191,56 @@ class RAGPipeline:
             # Keep the default empty vector store
             
         return pipeline
+
+
+async def create_default_rag_pipeline(user_id: str, rag_type: str = "basic", chunking_strategy: str = "basic") -> RAGPipeline:
+    """
+    Create a default RAG pipeline for a user.
+    
+    Args:
+        user_id: The user's ID
+        rag_type: Type of RAG implementation to use
+        chunking_strategy: Strategy for chunking documents
+        
+    Returns:
+        A new RAGPipeline instance
+    """
+    # Create the vector store directory if it doesn't exist
+    os.makedirs(DEFAULT_VECTOR_STORE_DIR, exist_ok=True)
+    
+    # Create a unique filename for this user's vector store
+    vector_store_path = os.path.join(DEFAULT_VECTOR_STORE_DIR, f"{user_id}_{uuid.uuid4().hex[:8]}")
+    
+    # Create a new pipeline
+    pipeline = RAGPipeline(vector_store_type=rag_type, chunking_strategy=chunking_strategy)
+    
+    # Save the empty pipeline to establish the path
+    await pipeline.save(vector_store_path)
+    
+    rag_logger.info(f"Created default RAG pipeline for user {user_id} at {vector_store_path}")
+    
+    return pipeline
+
+
+async def load_rag_pipeline(vector_store_path: str, rag_type: str = "basic", chunking_strategy: str = "basic") -> RAGPipeline:
+    """
+    Load a RAG pipeline from a vector store path.
+    
+    Args:
+        vector_store_path: Path to the vector store
+        rag_type: Type of RAG implementation to use
+        chunking_strategy: Strategy for chunking documents
+        
+    Returns:
+        A loaded RAGPipeline instance
+    """
+    # Load the pipeline
+    pipeline = await RAGPipeline.load(
+        filepath=vector_store_path,
+        vector_store_type=rag_type,
+        chunking_strategy=chunking_strategy
+    )
+    
+    rag_logger.info(f"Loaded RAG pipeline from {vector_store_path}")
+    
+    return pipeline

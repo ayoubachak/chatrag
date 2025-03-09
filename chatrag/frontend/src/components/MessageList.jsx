@@ -26,7 +26,7 @@ const MessageList = ({ messages, isTyping }) => {
         messages.map((message) => (
           <div
             key={message.id}
-            className={`message ${message.role} ${message.isError ? 'error' : ''} ${message.isWarning ? 'warning' : ''} ${message.isSystemMessage ? 'system-message' : ''}`}
+            className={`message ${message.role} ${message.isError ? 'error' : ''} ${message.isWarning ? 'warning' : ''} ${message.isSystemMessage ? 'system-message' : ''} ${message.isStreaming ? 'streaming' : ''}`}
           >
             <div className="message-header">
               <span className="message-role">
@@ -36,11 +36,15 @@ const MessageList = ({ messages, isTyping }) => {
               {message.timestamp && (
                 <span className="message-time">
                   {formatTimestamp(message.timestamp)}
+                  {message.isStreaming && <span className="streaming-indicator">streaming...</span>}
                 </span>
               )}
             </div>
             <div className="message-content">
               <ReactMarkdown>{message.content}</ReactMarkdown>
+              {message.isStreaming && (
+                <span className="cursor-blink">▌</span>
+              )}
             </div>
             
             {/* Show sources if available from RAG */}

@@ -20,6 +20,7 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
   const [chunkingStrategy, setChunkingStrategy] = useState('basic'); // 'basic' or 'super'
   const [benchmarkResults, setBenchmarkResults] = useState(null);
   const [sessionId, setSessionId] = useState(Date.now().toString()); // Add a session ID
+  const [useStreaming, setUseStreaming] = useState(false); // Add streaming state, default to true
   
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -53,6 +54,49 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
               timestamp: data.timestamp,
               metadata: data.metadata || {}
             }]);
+            setIsTyping(false);
+            break;
+            
+          case 'message_start':
+            // Initialize a streaming message
+            console.log('Starting streaming message:', data);
+            setMessages(prev => [...prev, {
+              id: data.id,
+              role: data.role,
+              content: '',
+              timestamp: data.timestamp,
+              metadata: data.metadata || {},
+              isStreaming: true
+            }]);
+            break;
+            
+          case 'message_chunk':
+            // Append to a streaming message
+            console.log('Received message chunk:', data);
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === data.id 
+                  ? { ...msg, content: msg.content + data.chunk }
+                  : msg
+              )
+            );
+            break;
+            
+          case 'message_complete':
+            // Finalize a streaming message
+            console.log('Completed streaming message:', data);
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === data.id 
+                  ? { 
+                      ...msg, 
+                      content: data.content, // Use the complete content from server
+                      isStreaming: false,
+                      metadata: data.metadata || msg.metadata
+                    }
+                  : msg
+              )
+            );
             setIsTyping(false);
             break;
             
@@ -214,6 +258,7 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
       model_type: modelType,
       rag_type: ragType,
       chunking_strategy: chunkingStrategy,
+      use_streaming: useStreaming, // Add streaming preference
       system_prompt: "You are a helpful assistant. Provide accurate and concise information.",
       context: chatHistory
     }));
@@ -446,14 +491,14 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
               
               <div className="control-group">
                 <label>Chunking Strategy:</label>
-                <div className="chunking-type-buttons">
+                <div className="chunking-buttons">
                   {[
-                    { id: 'basic', name: 'Basic', description: 'Simple chunking by paragraphs and pages' },
-                    { id: 'super', name: 'Super', description: 'Advanced semantic chunking with overlap' }
+                    { id: 'basic', name: 'Basic', description: 'Simple text splitting' },
+                    { id: 'super', name: 'Super', description: 'Advanced semantic chunking' }
                   ].map(strategy => (
                     <button
                       key={strategy.id}
-                      className={`chunking-type-button ${chunkingStrategy === strategy.id ? 'active' : ''}`}
+                      className={`chunking-button ${chunkingStrategy === strategy.id ? 'active' : ''}`}
                       onClick={() => handleChunkingStrategyChange(strategy.id)}
                       title={strategy.description}
                     >
@@ -463,8 +508,8 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
                 </div>
                 <div className="chunking-description">
                   {[
-                    { id: 'basic', name: 'Basic', description: 'Simple chunking by paragraphs and pages' },
-                    { id: 'super', name: 'Super', description: 'Advanced semantic chunking with overlap' }
+                    { id: 'basic', name: 'Basic', description: 'Simple text splitting' },
+                    { id: 'super', name: 'Super', description: 'Advanced semantic chunking' }
                   ].find(strategy => strategy.id === chunkingStrategy)?.description}
                 </div>
               </div>
@@ -474,6 +519,23 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
               <p>RAG is currently disabled. Enable it to use document retrieval capabilities.</p>
             </div>
           )}
+        </div>
+        
+        <div className="sidebar-section">
+          <div className="section-header">
+            <h3>Response Mode</h3>
+            <ToggleButton 
+              isActive={useStreaming} 
+              onClick={() => setUseStreaming(!useStreaming)}
+              activeLabel="Stream"
+              inactiveLabel="Complete"
+            />
+          </div>
+          <div className="setting-description">
+            {useStreaming 
+              ? "Responses will stream in real-time as they're generated" 
+              : "Responses will be sent after complete generation"}
+          </div>
         </div>
         
         <div className="sidebar-section">

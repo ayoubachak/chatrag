@@ -1,7 +1,7 @@
 import os
 import httpx
 import logging
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
 import asyncio
 import json
 
@@ -99,27 +99,95 @@ class HuggingFaceModel(BaseLanguageModel):
                 except asyncio.TimeoutError:
                     logger.error(f"API call timed out after {self.timeout} seconds")
                     self.token_manager.report_failure(token)
-                    # Try with a different token
-                    self.token_manager.rotate_token()
                     continue
                     
             except APIError as e:
-                # Check if it's a rate limit or quota error
-                if e.status_code == 429 or e.status_code == 402:
-                    logger.warning(f"Token exhausted or rate limited: {str(e)}")
-                    self.token_manager.report_failure(token, is_rate_limit=True)
-                    # Try with a different token
-                    self.token_manager.rotate_token()
+                logger.error(f"API error with token {token[:5]}...: {str(e)}")
+                self.token_manager.report_failure(token)
+                
+                # Check if we should retry
+                if attempt < self.max_retries - 1:
+                    logger.info(f"Retrying with a different token (attempt {attempt + 2}/{self.max_retries})")
                     continue
                 else:
-                    logger.error(f"API error: {str(e)}")
-                    return f"Error: {str(e)}"
+                    return f"Error: API request failed after {self.max_retries} attempts: {str(e)}"
+                    
             except Exception as e:
-                logger.error(f"Error in generate: {str(e)}", exc_info=True)
-                return f"Error generating response: {str(e)}"
+                logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+                return f"Error: {str(e)}"
+                
+        return "Error: Failed to generate response after multiple attempts"
         
-        # If we've exhausted all retries
-        return "Error: Unable to generate response after multiple attempts. Please try again later."
+    async def generate_stream(self, 
+                           prompt: str, 
+                           system_prompt: Optional[str] = None,
+                           temperature: float = 0.7,
+                           max_tokens: int = 1024,
+                           context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response using the HuggingFace API with token rotation.
+        """
+        # Format messages using our utility function
+        messages = format_chat_history(
+            messages=context or [],
+            system_prompt=system_prompt,
+            current_prompt=prompt
+        )
+        
+        # Try with multiple tokens if needed
+        for attempt in range(self.max_retries):
+            try:
+                # Get a client with the current token
+                token = self.token_manager.get_token()
+                if not token:
+                    yield "Error: No API tokens available"
+                    return
+                    
+                client = await self._create_client()
+                
+                try:
+                    # Use streaming API - don't await the stream creation
+                    stream = client.chat.completions.create(
+                        messages=messages,
+                        model=self.model_id,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stream=True
+                    )
+                    
+                    # Process the stream - iterate over it directly
+                    for chunk in stream:
+                        if (hasattr(chunk.choices[0], 'delta') and 
+                            hasattr(chunk.choices[0].delta, 'content') and 
+                            chunk.choices[0].delta.content is not None):
+                            content = chunk.choices[0].delta.content
+                            logger.debug(f"Streaming chunk: {content}")
+                            yield content
+                            # Small pause to allow for cooperative multitasking
+                            await asyncio.sleep(0)
+                    
+                    # Report success
+                    self.token_manager.report_success(token)
+                    return
+                    
+                except (APIError, Exception) as e:
+                    logger.error(f"API error with token {token[:5]}...: {str(e)}")
+                    self.token_manager.report_failure(token)
+                    
+                    # Check if we should retry
+                    if attempt < self.max_retries - 1:
+                        logger.info(f"Retrying streaming with a different token (attempt {attempt + 2}/{self.max_retries})")
+                        continue
+                    else:
+                        yield f"Error: API streaming request failed after {self.max_retries} attempts: {str(e)}"
+                        return
+                        
+            except Exception as e:
+                logger.error(f"Unexpected error in streaming: {str(e)}", exc_info=True)
+                yield f"Error: {str(e)}"
+                return
+                
+        yield "Error: Failed to generate streaming response after multiple attempts"
 
     async def generate_with_rag(self,
                               prompt: str,
@@ -129,116 +197,166 @@ class HuggingFaceModel(BaseLanguageModel):
                               max_tokens: int = 1024,
                               context: Optional[List[Dict[str, Any]]] = None) -> str:
         """
-        Generate a response with RAG-enhanced context.
+        Generate text with RAG context using the HuggingFace API with token rotation.
         """
-        try:
-            # Format messages using our utility function
-            messages = format_chat_history(
-                messages=context or [],
-                system_prompt=None,  # We'll handle the system prompt separately
-                current_prompt=None  # We'll handle the prompt separately
-            )
-            
-            # Create a RAG-specific system prompt
-            rag_system_prompt = system_prompt or "You are a helpful assistant. Answer the question based on the provided context."
-            
-            # Limit the size of each document to avoid context overflow
-            max_doc_length = 1000  # characters per document
-            truncated_docs = []
-            
-            for i, doc in enumerate(documents):
-                if len(doc) > max_doc_length:
-                    truncated_doc = doc[:max_doc_length] + "..."
-                    truncated_docs.append(truncated_doc)
-                else:
-                    truncated_docs.append(doc)
-            
-            # Limit the number of documents to include
-            max_docs = 3
-            if len(truncated_docs) > max_docs:
-                # Keep only the top documents
-                truncated_docs = truncated_docs[:max_docs]
-            
-            # Build the RAG context
-            rag_context = "The following information may be relevant to the question:\n\n"
-            rag_context += "\n\n".join([f"Document {i+1}:\n{doc}" for i, doc in enumerate(truncated_docs)])
-            rag_context += "\n\nUsing the above information, answer the following question."
-            
-            # Combine system prompt and RAG context
-            enhanced_system_prompt = f"{rag_system_prompt}\n\n{rag_context}"
-            
-            # Add system message at the beginning
-            if not messages or messages[0]["role"] != "system":
-                messages.insert(0, {"role": "system", "content": enhanced_system_prompt})
-            else:
-                messages[0]["content"] = enhanced_system_prompt
+        # Format messages using our utility function
+        messages = format_chat_history(
+            messages=context or [],
+            system_prompt=system_prompt,
+            current_prompt=prompt
+        )
+        
+        # Add retrieved documents to the system prompt
+        if system_prompt:
+            system_message = messages[0]
+            documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+            system_message["content"] = f"{system_message['content']}\n\nRelevant context:\n{documents_text}"
+        else:
+            # If no system prompt, add documents as a system message
+            documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+            system_message = {
+                "role": "system",
+                "content": f"You are a helpful assistant. Use the following information to answer the user's question:\n\n{documents_text}"
+            }
+            messages.insert(0, system_message)
+        
+        # Try with multiple tokens if needed
+        for attempt in range(self.max_retries):
+            try:
+                # Get a client with the current token
+                token = self.token_manager.get_token()
+                if not token:
+                    return "Error: No API tokens available"
+                    
+                client = await self._create_client()
                 
-            # Add the user prompt as the last message
-            if messages and messages[-1]["role"] == "user":
-                # If the last message is from the user, append to it
-                messages[-1]["content"] += f"\n\nQuestion: {prompt}"
-            else:
-                # Otherwise add as a new message
-                messages.append({"role": "user", "content": prompt})
-            
-            # Try with multiple tokens if needed
-            for attempt in range(self.max_retries):
-                try:
-                    # Get a client with the current token
-                    token = self.token_manager.get_token()
-                    if not token:
-                        return "Error: No API tokens available"
-                        
-                    client = await self._create_client()
-                    
-                    # Call the API with a timeout
-                    async def call_api():
-                        try:
-                            return await client.chat.completions.create(
-                                messages=messages,
-                                model=self.model_id,
-                                temperature=temperature,
-                                max_tokens=max_tokens
-                            )
-                        except (TypeError, AttributeError):
-                            # Fallback for older versions or if async is not supported
-                            return client.chat.completions.create(
-                                messages=messages,
-                                model=self.model_id,
-                                temperature=temperature,
-                                max_tokens=max_tokens
-                            )
-                    
+                # Call the API with a timeout
+                async def call_api():
                     try:
-                        chat_completion = await asyncio.wait_for(call_api(), timeout=self.timeout)
-                        # Report success
-                        self.token_manager.report_success(token)
-                        return chat_completion.choices[0].message.content
-                    except asyncio.TimeoutError:
-                        logger.error(f"API call timed out after {self.timeout} seconds")
-                        self.token_manager.report_failure(token)
-                        # Try with a different token
-                        self.token_manager.rotate_token()
-                        continue
-                        
-                except APIError as e:
-                    # Check if it's a rate limit or quota error
-                    if e.status_code == 429 or e.status_code == 402:
-                        logger.warning(f"Token exhausted or rate limited: {str(e)}")
-                        self.token_manager.report_failure(token, is_rate_limit=True)
-                        # Try with a different token
-                        self.token_manager.rotate_token()
+                        return await client.chat.completions.create(
+                            messages=messages,
+                            model=self.model_id,
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        )
+                    except (TypeError, AttributeError):
+                        # Fallback for older versions or if async is not supported
+                        return client.chat.completions.create(
+                            messages=messages,
+                            model=self.model_id,
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        )
+                
+                try:
+                    chat_completion = await asyncio.wait_for(call_api(), timeout=self.timeout)
+                    # Report success
+                    self.token_manager.report_success(token)
+                    return chat_completion.choices[0].message.content
+                except asyncio.TimeoutError:
+                    logger.error(f"API call timed out after {self.timeout} seconds")
+                    self.token_manager.report_failure(token)
+                    continue
+                    
+            except APIError as e:
+                logger.error(f"API error with token {token[:5]}...: {str(e)}")
+                self.token_manager.report_failure(token)
+                
+                # Check if we should retry
+                if attempt < self.max_retries - 1:
+                    logger.info(f"Retrying with a different token (attempt {attempt + 2}/{self.max_retries})")
+                    continue
+                else:
+                    return f"Error: API request failed after {self.max_retries} attempts: {str(e)}"
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+                return f"Error: {str(e)}"
+                
+        return "Error: Failed to generate response after multiple attempts"
+        
+    async def generate_with_rag_stream(self,
+                                    prompt: str,
+                                    documents: List[str],
+                                    system_prompt: Optional[str] = None,
+                                    temperature: float = 0.7,
+                                    max_tokens: int = 1024,
+                                    context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+        """
+        Generate a streaming response with RAG context using the HuggingFace API with token rotation.
+        """
+        # Format messages using our utility function
+        messages = format_chat_history(
+            messages=context or [],
+            system_prompt=system_prompt,
+            current_prompt=prompt
+        )
+        
+        # Add retrieved documents to the system prompt
+        if system_prompt:
+            system_message = messages[0]
+            documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+            system_message["content"] = f"{system_message['content']}\n\nRelevant context:\n{documents_text}"
+        else:
+            # If no system prompt, add documents as a system message
+            documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
+            system_message = {
+                "role": "system",
+                "content": f"You are a helpful assistant. Use the following information to answer the user's question:\n\n{documents_text}"
+            }
+            messages.insert(0, system_message)
+        
+        # Try with multiple tokens if needed
+        for attempt in range(self.max_retries):
+            try:
+                # Get a client with the current token
+                token = self.token_manager.get_token()
+                if not token:
+                    yield "Error: No API tokens available"
+                    return
+                    
+                client = await self._create_client()
+                
+                try:
+                    # Use streaming API - don't await the stream creation
+                    stream = client.chat.completions.create(
+                        messages=messages,
+                        model=self.model_id,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        stream=True
+                    )
+                    
+                    # Process the stream - iterate over it directly
+                    for chunk in stream:
+                        if (hasattr(chunk.choices[0], 'delta') and 
+                            hasattr(chunk.choices[0].delta, 'content') and 
+                            chunk.choices[0].delta.content is not None):
+                            content = chunk.choices[0].delta.content
+                            logger.debug(f"Streaming RAG chunk: {content}")
+                            yield content
+                            # Small pause to allow for cooperative multitasking
+                            await asyncio.sleep(0)
+                    
+                    # Report success
+                    self.token_manager.report_success(token)
+                    return
+                    
+                except (APIError, Exception) as e:
+                    logger.error(f"API error with token {token[:5]}...: {str(e)}")
+                    self.token_manager.report_failure(token)
+                    
+                    # Check if we should retry
+                    if attempt < self.max_retries - 1:
+                        logger.info(f"Retrying streaming with a different token (attempt {attempt + 2}/{self.max_retries})")
                         continue
                     else:
-                        logger.error(f"API error: {str(e)}")
-                        return f"Error: {str(e)}"
-                except Exception as e:
-                    logger.error(f"Error in generate_with_rag: {str(e)}", exc_info=True)
-                    return f"Error generating response: {str(e)}"
-            
-            # If we've exhausted all retries
-            return "Error: Unable to generate response after multiple attempts. Please try again later."
-            
-        except Exception as e:
-            logger.error(f"Error in generate_with_rag: {str(e)}", exc_info=True)
-            return f"Error generating response with RAG: {str(e)}"
+                        yield f"Error: API streaming request failed after {self.max_retries} attempts: {str(e)}"
+                        return
+                        
+            except Exception as e:
+                logger.error(f"Unexpected error in streaming: {str(e)}", exc_info=True)
+                yield f"Error: {str(e)}"
+                return
+                
+        yield "Error: Failed to generate streaming response after multiple attempts"
