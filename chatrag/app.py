@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 # Import routes
-from routes import files, benchmark
+from routes import files, benchmark_sync
 from websockets import chat
 from dotenv import load_dotenv
 
@@ -27,7 +27,7 @@ app.add_middleware(
 # Include routers
 app.include_router(files.router, prefix="/api", tags=["files"])
 app.include_router(chat.router, tags=["chat"])
-app.include_router(benchmark.router, prefix="/api", tags=["benchmark"])
+app.include_router(benchmark_sync.router, prefix="/api", tags=["benchmark"])  # Add the sync router
 
 # Create uploads directory if it doesn't exist
 uploads_dir = Path("uploads")

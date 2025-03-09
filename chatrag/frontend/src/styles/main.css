@@ -72,6 +72,10 @@
     font-size: 0.875rem;
     color: var(--secondary-color);
   }
+
+  .nav-button {
+    color: white;
+  }
   
   /* Chat Interface */
   .chat-container {

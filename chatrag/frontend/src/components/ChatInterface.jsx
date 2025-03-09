@@ -3,10 +3,6 @@ import MessageList from './MessageList';
 import FileUpload from './FileUpload';
 import ModelSelector from './ModelSelector';
 import ToggleButton from './ToggleButton';
-import RagSelector from './RagSelector';
-import ChunkingSelector from './ChunkingSelector';
-import BenchmarkButton from './BenchmarkButton';
-import BenchmarkResults from './BenchmarkResults';
 import { useWebSocket } from '../services/websocket';
 
 const ChatInterface = ({ userId, onConnectionChange }) => {
@@ -18,7 +14,6 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
   const [modelType, setModelType] = useState('local'); // 'local', 'huggingface', or 'lm_studio'
   const [ragType, setRagType] = useState('basic'); // 'basic', 'faiss', 'chroma', or 'hybrid'
   const [chunkingStrategy, setChunkingStrategy] = useState('basic'); // 'basic' or 'super'
-  const [benchmarkResults, setBenchmarkResults] = useState(null);
   const [sessionId, setSessionId] = useState(Date.now().toString()); // Add a session ID
   const [useStreaming, setUseStreaming] = useState(false); // Add streaming state, default to true
   
@@ -154,18 +149,6 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
           case 'connection_status':
             // Handle connection status updates
             console.log('Connection status:', data.status);
-            break;
-            
-          case 'benchmark_result':
-            // Handle benchmark results
-            console.log('Benchmark results:', data.results);
-            setBenchmarkResults(data.results);
-            setMessages(prev => [...prev, {
-              id: 'benchmark-' + Date.now(),
-              role: 'system',
-              content: `Benchmark completed. See results in the sidebar.`,
-              timestamp: data.timestamp
-            }]);
             break;
             
           default:
@@ -376,28 +359,6 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
     }
   };
 
-  // Handle benchmark results
-  const handleBenchmarkResult = (results) => {
-    setBenchmarkResults(results);
-    
-    if (results.error) {
-      setMessages(prev => [...prev, {
-        id: 'benchmark-error-' + Date.now(),
-        role: 'system',
-        content: `Benchmark error: ${results.error}`,
-        timestamp: new Date().toISOString(),
-        isError: true
-      }]);
-    } else {
-      setMessages(prev => [...prev, {
-        id: 'benchmark-' + Date.now(),
-        role: 'system',
-        content: `Benchmark completed. See results in the sidebar.`,
-        timestamp: new Date().toISOString()
-      }]);
-    }
-  };
-
   // Handle starting a new chat
   const handleNewChat = () => {
     // Clear messages
@@ -582,22 +543,6 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
             </div>
           )}
         </div>
-        
-        {useRag && (
-          <div className="sidebar-section">
-            <h3>Benchmark</h3>
-            <div className="benchmark-section">
-              <BenchmarkButton 
-                userId={userId}
-                onBenchmarkResult={handleBenchmarkResult}
-              />
-              
-              {benchmarkResults && (
-                <BenchmarkResults results={benchmarkResults} />
-              )}
-            </div>
-          </div>
-        )}
       </div>
       
       <div className="chat-main">

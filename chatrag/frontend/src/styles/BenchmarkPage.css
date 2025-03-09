@@ -1,0 +1,278 @@
+/* BenchmarkPage.css */
+
+/* Main container */
+.benchmark-container {
+    padding: 1.5rem;
+    max-width: 72rem;
+    margin: 0 auto;
+  }
+  
+  /* Page title */
+  .page-title {
+    font-size: 1.5rem;
+    font-weight: bold;
+    margin-bottom: 1.5rem;
+  }
+  
+  /* Configuration section */
+  .config-section {
+    margin-bottom: 2rem;
+    background-color: white;
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+  
+  .section-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+  }
+  
+  /* Form grid layout */
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+  
+  @media (min-width: 768px) {
+    .form-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  
+  /* Form input group */
+  .input-group {
+    margin-bottom: 1rem;
+  }
+  
+  .input-label {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+  }
+  
+  .input-field {
+    width: 100%;
+    margin-top: 0.25rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #d1d5db;
+    border-radius: 0.25rem;
+  }
+  
+  .input-hint {
+    font-size: 0.75rem;
+    color: #6b7280;
+  }
+  
+  /* Checkbox group */
+  .checkbox-group {
+    margin-bottom: 1.5rem;
+  }
+  
+  .checkbox-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+  
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+  }
+  
+  .checkbox-input {
+    margin-right: 0.5rem;
+  }
+  
+  .capitalize {
+    text-transform: capitalize;
+  }
+  
+  /* Button styles */
+  .btn {
+    padding: 0.5rem 1rem;
+    border-radius: 0.25rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s;
+  }
+  
+  .btn-primary {
+    background-color: #2563eb;
+    color: white;
+  }
+  
+  .btn-primary:hover {
+    background-color: #1d4ed8;
+  }
+  
+  .btn-disabled {
+    background-color: #d1d5db;
+    color: #6b7280;
+    cursor: not-allowed;
+  }
+  
+  /* Error message */
+  .error-message {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    background-color: #fee2e2;
+    border: 1px solid #fecaca;
+    border-radius: 0.25rem;
+    color: #dc2626;
+  }
+  
+  /* Results section */
+  .results-section {
+    background-color: white;
+    padding: 1.5rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+  
+  /* Summary box */
+  .summary-box {
+    margin-bottom: 2rem;
+    padding: 1rem;
+    background-color: #eff6ff;
+    border-radius: 0.25rem;
+    border: 1px solid #dbeafe;
+  }
+  
+  .summary-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+    color: #1e40af;
+  }
+  
+  .summary-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.75rem;
+  }
+  
+  @media (min-width: 768px) {
+    .summary-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+  
+  .summary-card {
+    background-color: white;
+    padding: 0.75rem;
+    border-radius: 0.25rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  }
+  
+  .summary-label {
+    font-weight: 500;
+  }
+  
+  .text-green {
+    color: #16a34a;
+  }
+  
+  .font-bold {
+    font-weight: 700;
+  }
+  
+  /* Charts section */
+  .charts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    margin-bottom: 2rem;
+  }
+  
+  .chart-box {
+    padding: 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+  }
+  
+  .chart-title {
+    font-size: 1.125rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+  }
+  
+  .chart-container {
+    height: 16rem;
+    width: 100%;
+  }
+  
+  /* Table styles */
+  .table-container {
+    overflow: hidden;
+  }
+  
+  .table-title {
+    font-size: 1.125rem;
+    font-weight: 500;
+    margin-bottom: 0.75rem;
+  }
+  
+  .table-wrapper {
+    overflow-x: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+  }
+  
+  .results-table {
+    min-width: 100%;
+    border-collapse: collapse;
+  }
+  
+  .table-header {
+    background-color: #f9fafb;
+  }
+  
+  .table-header th {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    color: #6b7280;
+  }
+  
+  .table-header th.text-right {
+    text-align: right;
+  }
+  
+  .table-body tr {
+    border-top: 1px solid #e5e7eb;
+  }
+  
+  .table-body tr.winner-row {
+    background-color: #f0fdf4;
+  }
+  
+  .table-cell {
+    padding: 0.75rem 1rem;
+    white-space: nowrap;
+  }
+  
+  .text-right {
+    text-align: right;
+  }
+  
+  .text-blue {
+    color: #2563eb;
+  }
+  
+  .text-green {
+    color: #16a34a;
+  }
+  
+  .text-orange {
+    color: #ea580c;
+  }
+  
+  .text-gray {
+    color: #6b7280;
+  }
