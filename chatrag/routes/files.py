@@ -28,7 +28,7 @@ async def upload_file(
         file: The uploaded file
         user_id: The user's ID
         rag_type: Type of RAG implementation to use ("basic", "faiss", "chroma", or "hybrid")
-        chunking_strategy: Strategy to use for chunking documents ("basic" or "super")
+        chunking_strategy: Strategy to use for chunking documents ("basic" or "super" or "quantum")
     """
     try:
         files_logger.info(f"Received file upload request from user {user_id} with RAG type: {rag_type} and chunking strategy: {chunking_strategy}")
@@ -39,7 +39,7 @@ async def upload_file(
             rag_type = "basic"
             
         # Validate chunking strategy
-        if chunking_strategy not in ["basic", "super"]:
+        if chunking_strategy not in ["basic", "super", "quantum"]:
             files_logger.warning(f"Invalid chunking strategy: {chunking_strategy}, defaulting to 'basic'")
             chunking_strategy = "basic"
         
@@ -240,7 +240,7 @@ async def switch_rag_settings(
     Args:
         user_id: The user's ID
         rag_type: Type of RAG implementation to use ("basic", "faiss", "chroma", or "hybrid")
-        chunking_strategy: Strategy to use for chunking documents ("basic" or "super")
+        chunking_strategy: Strategy to use for chunking documents ("basic" or "super" or "quantum")
     """
     try:
         files_logger.info(f"Switching RAG settings for user {user_id} - type: {rag_type}, chunking strategy: {chunking_strategy}")
@@ -251,7 +251,7 @@ async def switch_rag_settings(
             raise HTTPException(status_code=400, detail=f"Invalid RAG type: {rag_type}. Must be one of: basic, faiss, chroma, hybrid")
             
         # Validate chunking strategy if provided
-        if chunking_strategy and chunking_strategy not in ["basic", "super"]:
+        if chunking_strategy and chunking_strategy not in ["basic", "super", "quantum"]:
             files_logger.warning(f"Invalid chunking strategy: {chunking_strategy}")
             raise HTTPException(status_code=400, detail=f"Invalid chunking strategy: {chunking_strategy}. Must be one of: basic, super")
         

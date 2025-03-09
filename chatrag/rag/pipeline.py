@@ -21,7 +21,7 @@ class RAGPipeline:
     embedding generation, and retrieval.
     """
     
-    def __init__(self, vector_store_type: Literal["basic", "faiss", "chroma", "hybrid"] = "basic", chunking_strategy: Literal["basic", "super"] = "basic"):
+    def __init__(self, vector_store_type: Literal["basic", "faiss", "chroma", "hybrid"] = "basic", chunking_strategy: Literal["basic", "super", "quantum"] = "basic"):
         """
         Initialize the RAG pipeline with default components.
         
@@ -34,6 +34,7 @@ class RAGPipeline:
             chunking_strategy: Strategy to use for chunking documents
                 - "basic": Simple chunking by paragraphs and pages
                 - "super": Advanced semantic chunking with overlap
+                - "quantum": Super Advanced semantic chunking
         """
         self.document_loader = DocumentLoader(chunking_strategy=chunking_strategy)
         self.embedding_generator = EmbeddingGenerator()
@@ -58,7 +59,7 @@ class RAGPipeline:
         self.last_filepath = None  # Track the filepath the pipeline was loaded from
         self.vector_store_path = None  # Path to the vector store
         
-    def set_chunking_strategy(self, strategy: Literal["basic", "super"]):
+    def set_chunking_strategy(self, strategy: Literal["basic", "super", "quantum"]):
         """
         Change the chunking strategy.
         
@@ -151,7 +152,7 @@ class RAGPipeline:
         return filepath
         
     @classmethod
-    async def load(cls, filepath: str, vector_store_type: Literal["basic", "faiss", "chroma", "hybrid"] = "basic", chunking_strategy: Literal["basic", "super"] = "basic"):
+    async def load(cls, filepath: str, vector_store_type: Literal["basic", "faiss", "chroma", "hybrid"] = "basic", chunking_strategy: Literal["basic", "super", "quantum"] = "basic"):
         """
         Load a saved RAG pipeline state.
         

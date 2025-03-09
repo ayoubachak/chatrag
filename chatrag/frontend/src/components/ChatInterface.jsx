@@ -13,7 +13,7 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
   const [useRag, setUseRag] = useState(false);
   const [modelType, setModelType] = useState('local'); // 'local', 'huggingface', or 'lm_studio'
   const [ragType, setRagType] = useState('basic'); // 'basic', 'faiss', 'chroma', or 'hybrid'
-  const [chunkingStrategy, setChunkingStrategy] = useState('basic'); // 'basic' or 'super'
+  const [chunkingStrategy, setChunkingStrategy] = useState('basic'); // 'basic' or 'super' or 'quantum'
   const [sessionId, setSessionId] = useState(Date.now().toString()); // Add a session ID
   const [useStreaming, setUseStreaming] = useState(false); // Add streaming state, default to true
   
@@ -455,7 +455,8 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
                 <div className="chunking-buttons">
                   {[
                     { id: 'basic', name: 'Basic', description: 'Simple text splitting' },
-                    { id: 'super', name: 'Super', description: 'Advanced semantic chunking' }
+                    { id: 'super', name: 'Super', description: 'Advanced semantic chunking' },
+                    { id: 'quantum', name: 'Quantum', description: 'Super Advanced semantic chunking' }
                   ].map(strategy => (
                     <button
                       key={strategy.id}
@@ -470,7 +471,8 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
                 <div className="chunking-description">
                   {[
                     { id: 'basic', name: 'Basic', description: 'Simple text splitting' },
-                    { id: 'super', name: 'Super', description: 'Advanced semantic chunking' }
+                    { id: 'super', name: 'Super', description: 'Advanced semantic chunking' },
+                    { id: 'quantum', name: 'Quantum', description: 'Super Advanced semantic chunking' }
                   ].find(strategy => strategy.id === chunkingStrategy)?.description}
                 </div>
               </div>
