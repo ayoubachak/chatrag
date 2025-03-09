@@ -988,3 +988,109 @@
     padding: 0 8px;
     line-height: 1.4;
   }
+
+  /* Add these CSS styles to your existing stylesheet */
+
+/* Thinking process styling */
+.thinking-container {
+  margin-top: 8px;
+  border-top: 1px dashed #ccc;
+}
+
+.thinking-section {
+  margin: 8px 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: #f8f9fa;
+}
+
+.thinking-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background-color: #f0f1f2;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.2s;
+}
+
+.thinking-header:hover {
+  background-color: #e5e7e9;
+}
+
+.thinking-icon {
+  display: flex;
+  align-items: center;
+  font-size: 0.9rem;
+  color: #555;
+}
+
+.thinking-toggle {
+  font-size: 0.8rem;
+  color: #777;
+}
+
+.thinking-content {
+  padding: 12px 16px;
+  background-color: #f8f9fa;
+  border-top: 1px solid #e5e7e9;
+  color: #555;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.thinking-content pre {
+  background-color: #eaecee;
+  border-radius: 4px;
+  padding: 8px;
+  overflow-x: auto;
+}
+
+/* Animation for thinking expansion */
+.thinking-content {
+  animation: slideDown 0.3s ease-in-out;
+}
+
+@keyframes slideDown {
+  from {
+    max-height: 0;
+    opacity: 0;
+  }
+  to {
+    max-height: 500px;
+    opacity: 1;
+  }
+}
+
+/* Additional styling for the message components */
+.message.assistant {
+  background-color: #f0f7ff;
+  border-left: 3px solid #0084ff;
+}
+
+.message-content {
+  padding: 8px 12px;
+  line-height: 1.5;
+}
+
+/* Markdown styling within thinking content */
+.thinking-content p {
+  margin: 0.5em 0;
+}
+
+.thinking-content ul, 
+.thinking-content ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.thinking-content code {
+  background-color: #eaecee;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
