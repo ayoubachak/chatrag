@@ -447,6 +447,7 @@
     flex: 1;
     text-align: left;
     font-weight: bold;
+    color: #495057; 
   }
   
   .toggle-switch {
@@ -461,6 +462,10 @@
   
   .toggle-button.active .toggle-switch {
     background-color: #1890ff;
+  }
+
+  .toggle-button.active .toggle-label {
+    color: #1890ff;
   }
   
   .toggle-handle {
@@ -718,7 +723,7 @@
     margin-bottom: 5px;
     font-weight: 600;
     font-size: 14px;
-    color: #495057;
+    color: #343a40;
   }
 
   /* RAG Type Buttons */
@@ -737,6 +742,7 @@
     font-size: 14px;
     cursor: pointer;
     transition: all 0.2s ease;
+    color: #495057;
   }
 
   .rag-type-button:hover, .chunking-type-button:hover {
@@ -744,16 +750,50 @@
   }
 
   .rag-type-button.active, .chunking-type-button.active {
-    background-color: #007bff;
-    color: white;
-    border-color: #007bff;
+    background-color: #e6f7ff;
+    color: #1890ff;
+    border: 2px solid #1890ff;
+    font-weight: 500; 
+    box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2);
   }
 
-  .rag-description, .chunking-description {
+  .rag-description, .chunking-description, .setting-description {
     font-size: 12px;
-    color: #6c757d;
+    color: #4f5b69;
     margin-top: 5px;
     line-height: 1.4;
+  }
+
+  /* Chunking Button Fixes */
+  .chunking-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .chunking-button {
+    padding: 6px 12px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    background-color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    color: #495057; /* Added specific text color */
+  }
+
+  .chunking-button:hover {
+    background-color: #e9ecef;
+    border-color: #adb5bd;
+  }
+
+  .chunking-button.active {
+    background-color: #e6f7ff; /* Lighter blue background */
+    color: #1890ff; /* Blue text */
+    border: 2px solid #1890ff; /* Thicker border */
+    font-weight: 500; /* Slightly bolder text */
+    box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.2); /* Subtle glow effect */
   }
 
   /* File Details */
@@ -881,9 +921,10 @@
     background-color: #e9ecef;
     border-radius: 4px;
     font-size: 14px;
-    color: #6c757d;
+    color: #495057;
     text-align: center;
     margin-top: 10px;
+    border-left: 3px solid #adb5bd;
   }
 
   /* New Chat Button */
