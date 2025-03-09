@@ -1,22 +1,34 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
-export const useWebSocket = (url) => {
+export const useWebSocket = (initialUrl) => {
   const [socket, setSocket] = useState(null);
   const [lastMessage, setLastMessage] = useState(null);
   const [readyState, setReadyState] = useState(WebSocket.CONNECTING);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [url, setUrl] = useState(initialUrl);
   const maxReconnectAttempts = 5;
   const reconnectDelay = 3000; // 3 seconds
   const pingInterval = 30000; // 30 seconds
+  const pingTimerRef = useRef(null);
 
   // Initialize WebSocket connection
   useEffect(() => {
+    // Clean up previous connection if it exists
+    if (socket) {
+      socket.close();
+      if (pingTimerRef.current) {
+        clearInterval(pingTimerRef.current);
+      }
+    }
+
     // Create a new WebSocket connection
+    console.log('Connecting to WebSocket:', url);
     const ws = new WebSocket(url);
     setSocket(ws);
+    setReadyState(WebSocket.CONNECTING);
 
     // Set up ping interval to keep connection alive
-    const pingTimer = setInterval(() => {
+    pingTimerRef.current = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         // Send a ping to keep the connection alive
         try {
@@ -71,7 +83,9 @@ export const useWebSocket = (url) => {
 
     // Clean up on unmount
     return () => {
-      clearInterval(pingTimer);
+      if (pingTimerRef.current) {
+        clearInterval(pingTimerRef.current);
+      }
       if (ws) {
         ws.close();
       }
@@ -87,10 +101,18 @@ export const useWebSocket = (url) => {
     return false;
   }, [socket]);
 
+  // Reconnect to a new URL
+  const reconnect = useCallback((newUrl) => {
+    console.log('Reconnecting to new URL:', newUrl);
+    setUrl(newUrl);
+    setReconnectAttempt(0);
+  }, []);
+
   return {
     socket,
     lastMessage,
     readyState,
     sendMessage,
+    reconnect,
   };
 };

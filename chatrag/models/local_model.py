@@ -3,6 +3,10 @@ import logging
 import torch
 from .base import BaseLanguageModel
 from .local_model_manager import ModelManager
+import os
+import asyncio
+import time
+from .utils import format_chat_history
 
 class LocalModel(BaseLanguageModel):
     """
@@ -50,48 +54,12 @@ class LocalModel(BaseLanguageModel):
             return "Error: Failed to load model. Please check logs for details."
         
         try:
-            # Format the messages according to the model's expected format
-            messages = []
-            
-            # Add system prompt if provided
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-                
-            # Add previous context messages if provided
-            if context:
-                # Validate and process context to ensure proper role alternation
-                valid_messages = []
-                expected_roles = ["user", "assistant"] * (len(context) // 2 + 1)
-                
-                # If we already have a system message, adjust the expected roles accordingly
-                if messages and messages[0]["role"] == "system":
-                    # We need to ensure the first message after system is from user
-                    expected_roles = ["user", "assistant"] * (len(context) // 2 + 1)
-                
-                for i, msg in enumerate(context):
-                    # Get role and content
-                    role = msg.get("role")
-                    content = msg.get("content", "")
-                    
-                    # Skip messages with missing content
-                    if not content:
-                        continue
-                        
-                    # Ensure proper role alternation (user -> assistant -> user -> ...)
-                    if i < len(expected_roles):
-                        # Use the expected role for this position
-                        valid_messages.append({"role": expected_roles[i], "content": content})
-                    else:
-                        # If we've gone beyond expected roles, just alternate from the last one
-                        last_role = valid_messages[-1]["role"] if valid_messages else "assistant"
-                        next_role = "user" if last_role == "assistant" else "assistant"
-                        valid_messages.append({"role": next_role, "content": content})
-                
-                # Add the valid messages to our message list
-                messages.extend(valid_messages)
-                
-            # Add the current prompt as a user message
-            messages.append({"role": "user", "content": prompt})
+            # Format the messages using our utility function
+            messages = format_chat_history(
+                messages=context or [], 
+                system_prompt=system_prompt,
+                current_prompt=prompt
+            )
             
             # Convert messages to the format expected by the model
             prompt_text = self.tokenizer.apply_chat_template(
@@ -100,53 +68,42 @@ class LocalModel(BaseLanguageModel):
                 add_generation_prompt=True
             )
             
-            # Tokenize the input
+            self.logger.debug(f"Formatted prompt: {prompt_text[:200]}...")
+            
+            # Tokenize the prompt
             inputs = self.tokenizer(prompt_text, return_tensors="pt").to(self.model.device)
             
-            # Check if we're running on CPU or GPU
-            is_cpu = self.model.device.type == "cpu"
-            
-            # Generate the response
+            # Generate response
             with torch.no_grad():
-                # Adjust parameters based on device
-                if is_cpu:
-                    # CPU-optimized parameters
-                    generation_config = {
-                        "max_new_tokens": min(max_tokens, 512),
-                        "temperature": temperature,
-                        "do_sample": temperature > 0,
-                        "pad_token_id": self.tokenizer.eos_token_id,
-                        "use_cache": True,
-                        "num_beams": 1,
-                        "early_stopping": True
-                    }
-                else:
-                    # GPU-optimized parameters
-                    generation_config = {
-                        "max_new_tokens": max_tokens,
-                        "temperature": temperature,
-                        "do_sample": temperature > 0,
-                        "pad_token_id": self.tokenizer.eos_token_id,
-                        "use_cache": True,
-                        "top_p": 0.9,
-                        "repetition_penalty": 1.1,
-                        "num_beams": 1,
-                        "early_stopping": True
-                    }
+                # Set generation parameters
+                generation_config = {
+                    "max_new_tokens": max_tokens,
+                    "temperature": temperature,
+                    "do_sample": temperature > 0,
+                    "top_p": 0.95,
+                    "top_k": 50,
+                    "repetition_penalty": 1.1,
+                }
                 
-                outputs = self.model.generate(inputs.input_ids, **generation_config)
+                # Generate tokens
+                start_time = time.time()
+                output = self.model.generate(
+                    **inputs,
+                    **generation_config
+                )
+                end_time = time.time()
+                
+                self.logger.info(f"Generation took {end_time - start_time:.2f} seconds")
+                
+            # Decode the output
+            generated_text = self.tokenizer.decode(output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
             
-            # Decode the output, skipping the input tokens
-            generated_text = self.tokenizer.decode(
-                outputs[0][inputs.input_ids.shape[1]:], 
-                skip_special_tokens=True
-            )
+            return generated_text.strip()
             
-            return generated_text
         except Exception as e:
-            self.logger.error(f"Error generating response: {str(e)}")
+            self.logger.error(f"Error generating text: {str(e)}", exc_info=True)
             return f"Error generating response: {str(e)}"
-            
+
     async def generate_with_rag(self,
                               prompt: str,
                               documents: List[str],
@@ -155,24 +112,83 @@ class LocalModel(BaseLanguageModel):
                               max_tokens: int = 1024,
                               context: Optional[List[Dict[str, Any]]] = None) -> str:
         """
-        Generate a response with RAG-enhanced context.
+        Generate text with RAG context using the local model.
         """
-        # Build RAG context from documents
-        if documents:
-            rag_context = "The following information may be relevant to the question:\n\n"
-            rag_context += "\n\n".join([f"Document {i+1}:\n{doc}" for i, doc in enumerate(documents)])
-            rag_context += "\n\nUsing the above information, answer the following question."
+        # Ensure model is loaded
+        if not await self.load_model():
+            return "Error: Failed to load model. Please check logs for details."
+        
+        try:
+            # Format the messages using our utility function
+            messages = format_chat_history(
+                messages=context or [], 
+                system_prompt=system_prompt,
+                current_prompt=None  # We'll handle the prompt separately with RAG
+            )
             
-            # Combine with system prompt if provided
-            enhanced_system_prompt = f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
-        else:
-            enhanced_system_prompt = system_prompt
+            # Create a RAG-specific system prompt if none provided
+            if not system_prompt:
+                rag_system_prompt = "You are a helpful assistant. Answer the question based on the provided context. If the context doesn't contain relevant information, say so."
+            else:
+                rag_system_prompt = system_prompt
+                
+            # If we don't have a system message yet, add one
+            if not messages or messages[0]["role"] != "system":
+                messages.insert(0, {"role": "system", "content": rag_system_prompt})
+                
+            # Format the retrieved documents
+            context_str = "\n\n".join([f"Document {i+1}:\n{doc}" for i, doc in enumerate(documents)])
             
-        # Use the regular generate function with enhanced context
-        return await self.generate(
-            prompt=prompt,
-            system_prompt=enhanced_system_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            context=context
-        )
+            # Add the context and prompt as the final user message
+            final_prompt = f"Context:\n{context_str}\n\nQuestion: {prompt}"
+            
+            # Add the final prompt as a user message
+            if messages and messages[-1]["role"] == "user":
+                # If the last message is from the user, append to it
+                messages[-1]["content"] += f"\n\n{final_prompt}"
+            else:
+                # Otherwise add as a new message
+                messages.append({"role": "user", "content": final_prompt})
+            
+            # Convert messages to the format expected by the model
+            prompt_text = self.tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=True
+            )
+            
+            self.logger.debug(f"Formatted RAG prompt: {prompt_text[:200]}...")
+            
+            # Tokenize the prompt
+            inputs = self.tokenizer(prompt_text, return_tensors="pt").to(self.model.device)
+            
+            # Generate response
+            with torch.no_grad():
+                # Set generation parameters
+                generation_config = {
+                    "max_new_tokens": max_tokens,
+                    "temperature": temperature,
+                    "do_sample": temperature > 0,
+                    "top_p": 0.95,
+                    "top_k": 50,
+                    "repetition_penalty": 1.1,
+                }
+                
+                # Generate tokens
+                start_time = time.time()
+                output = self.model.generate(
+                    **inputs,
+                    **generation_config
+                )
+                end_time = time.time()
+                
+                self.logger.info(f"RAG generation took {end_time - start_time:.2f} seconds")
+                
+            # Decode the output
+            generated_text = self.tokenizer.decode(output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+            
+            return generated_text.strip()
+            
+        except Exception as e:
+            self.logger.error(f"Error generating RAG text: {str(e)}", exc_info=True)
+            return f"Error generating RAG response: {str(e)}"

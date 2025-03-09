@@ -26,7 +26,7 @@ const MessageList = ({ messages, isTyping }) => {
         messages.map((message) => (
           <div
             key={message.id}
-            className={`message ${message.role} ${message.isError ? 'error' : ''}`}
+            className={`message ${message.role} ${message.isError ? 'error' : ''} ${message.isWarning ? 'warning' : ''} ${message.isSystemMessage ? 'system-message' : ''}`}
           >
             <div className="message-header">
               <span className="message-role">

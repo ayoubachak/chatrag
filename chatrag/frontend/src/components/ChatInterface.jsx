@@ -19,13 +19,14 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
   const [ragType, setRagType] = useState('basic'); // 'basic', 'faiss', 'chroma', or 'hybrid'
   const [chunkingStrategy, setChunkingStrategy] = useState('basic'); // 'basic' or 'super'
   const [benchmarkResults, setBenchmarkResults] = useState(null);
+  const [sessionId, setSessionId] = useState(Date.now().toString()); // Add a session ID
   
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   
   // WebSocket connection
-  const { sendMessage, lastMessage, readyState } = useWebSocket(
-    `ws://${window.location.hostname}:8000/ws/chat/${userId}`
+  const { sendMessage, lastMessage, readyState, reconnect } = useWebSocket(
+    `ws://${window.location.hostname}:8000/ws/chat/${userId}?session=${sessionId}`
   );
   
   // Update connection status
@@ -144,6 +145,39 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
     inputRef.current?.focus();
   }, []);
   
+  // Add welcome message on first load
+  useEffect(() => {
+    // Only add welcome message if there are no messages yet
+    if (messages.length === 0) {
+      setMessages([{
+        id: `welcome-${Date.now()}`,
+        role: 'system',
+        content: 'Welcome! How can I help you today?',
+        timestamp: new Date().toISOString(),
+        isSystemMessage: true  // Mark as system message for UI purposes only
+      }]);
+    }
+  }, []);
+  
+  // Add keyboard shortcut for new chat (Ctrl+N)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Check if Ctrl+N is pressed
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault(); // Prevent browser's "New Window" action
+        handleNewChat();
+      }
+    };
+    
+    // Add event listener
+    window.addEventListener('keydown', handleKeyDown);
+    
+    // Clean up
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+  
   // Handle message submission
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -163,6 +197,15 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
     // Show typing indicator immediately
     setIsTyping(true);
     
+    // Filter out system messages and get only the last 10 user/assistant messages
+    const chatHistory = messages
+      .filter(msg => msg.role === 'user' || msg.role === 'assistant')
+      .slice(-10)
+      .map(msg => ({ 
+        role: msg.role, 
+        content: msg.content 
+      }));
+    
     // Send message to server
     const success = sendMessage(JSON.stringify({
       type: 'message',
@@ -171,10 +214,8 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
       model_type: modelType,
       rag_type: ragType,
       chunking_strategy: chunkingStrategy,
-      context: messages.slice(-10).map(msg => ({ 
-        role: msg.role, 
-        content: msg.content 
-      }))
+      system_prompt: "You are a helpful assistant. Provide accurate and concise information.",
+      context: chatHistory
     }));
     
     // If sending failed, show an error
@@ -311,10 +352,56 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
       }]);
     }
   };
+
+  // Handle starting a new chat
+  const handleNewChat = () => {
+    // Clear messages
+    setMessages([]);
+    
+    // Clear input
+    setInput('');
+    
+    // Reset typing indicator
+    setIsTyping(false);
+    
+    // Generate a new session ID
+    const newSessionId = Date.now().toString();
+    setSessionId(newSessionId);
+    
+    // Reconnect WebSocket with new session ID
+    reconnect(`ws://${window.location.hostname}:8000/ws/chat/${userId}?session=${newSessionId}`);
+    
+    // Focus the input field
+    inputRef.current?.focus();
+    
+    // Add welcome message
+    setTimeout(() => {
+      setMessages([{
+        id: `system-${Date.now()}`,
+        role: 'system',
+        content: 'New chat started. How can I help you today?',
+        timestamp: new Date().toISOString(),
+        isSystemMessage: true  // Mark as system message for UI purposes only
+      }]);
+    }, 100);  // Small delay to ensure WebSocket reconnection has started
+    
+    console.log('Started new chat session:', newSessionId);
+  };
   
   return (
     <div className="chat-container">
       <div className="chat-sidebar">
+        <div className="sidebar-section">
+          <button 
+            className="new-chat-button" 
+            onClick={handleNewChat}
+            title="Start a new chat session (Ctrl+N)"
+          >
+            <span className="new-chat-icon">+</span>
+            New Chat
+          </button>
+        </div>
+        
         <div className="sidebar-section rag-section">
           <div className="section-header">
             <h3>RAG Settings</h3>
