@@ -1,6 +1,7 @@
 import os
 import httpx
 from typing import List, Dict, Any, Optional
+import asyncio
 
 from openai import OpenAI
 from .base import BaseLanguageModel
@@ -122,11 +123,13 @@ class HuggingFaceModel(BaseLanguageModel):
         self.model_id = model_id
         self.api_key = os.environ.get("HF_API_TOKEN")
         self.base_url = os.environ.get("HF_API_BASE_URL", "https://api.openai.com/v1")
+        self.max_context_length = 4000  # Maximum context length in tokens
+        self.timeout = 60  # Timeout in seconds for API calls
         
         if not self.api_key:
             raise ValueError("OpenAI API token not found. Please set the HF_API_TOKEN environment variable.")
             
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
 
     async def generate(self, 
                  prompt: str, 
@@ -171,23 +174,38 @@ class HuggingFaceModel(BaseLanguageModel):
         
         # Use async version of the OpenAI client if available, otherwise use synchronous version
         try:
-            # For newer versions of the OpenAI client that support async
-            chat_completion = await self.client.chat.completions.create(
-                messages=messages,
-                model=self.model_id,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-        except (TypeError, AttributeError):
-            # Fallback for older versions or if async is not supported
-            chat_completion = self.client.chat.completions.create(
-                messages=messages,
-                model=self.model_id,
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
+            # Implement timeout using asyncio.wait_for
+            async def call_api():
+                try:
+                    # For newer versions of the OpenAI client that support async
+                    return await self.client.chat.completions.create(
+                        messages=messages,
+                        model=self.model_id,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
+                except (TypeError, AttributeError):
+                    # Fallback for older versions or if async is not supported
+                    return self.client.chat.completions.create(
+                        messages=messages,
+                        model=self.model_id,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
             
-        return chat_completion.choices[0].message.content
+            # Call the API with a timeout
+            try:
+                chat_completion = await asyncio.wait_for(call_api(), timeout=self.timeout)
+                return chat_completion.choices[0].message.content
+            except asyncio.TimeoutError:
+                import logging
+                logging.error(f"API call to HuggingFace timed out after {self.timeout} seconds")
+                return f"Error: The request to the model timed out after {self.timeout} seconds. Please try again with a simpler query or fewer documents."
+                
+        except Exception as e:
+            import logging
+            logging.error(f"Error in HuggingFaceModel.generate: {str(e)}", exc_info=True)
+            return f"Error generating response: {str(e)}"
 
     async def generate_with_rag(self,
                               prompt: str,
@@ -199,19 +217,49 @@ class HuggingFaceModel(BaseLanguageModel):
         """
         Generate a response with RAG-enhanced context.
         """
-        rag_context = "The following information may be relevant to the question:\n\n"
-        rag_context += "\n\n".join([f"Document {i+1}:\n{doc}" for i, doc in enumerate(documents)])
-        rag_context += "\n\nUsing the above information, answer the following question."
-        
-        if system_prompt:
-            enhanced_system_prompt = f"{system_prompt.strip()}\n\n{rag_context}"
-        else:
-            enhanced_system_prompt = rag_context
+        try:
+            # Limit the size of each document to avoid context overflow
+            max_doc_length = 1000  # characters per document
+            truncated_docs = []
             
-        return await self.generate(
-            prompt=prompt,
-            system_prompt=enhanced_system_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            context=context
-        )
+            for i, doc in enumerate(documents):
+                if len(doc) > max_doc_length:
+                    truncated_doc = doc[:max_doc_length] + "..."
+                    truncated_docs.append(truncated_doc)
+                else:
+                    truncated_docs.append(doc)
+            
+            # Limit the number of documents to include
+            max_docs = 3
+            if len(truncated_docs) > max_docs:
+                # Keep only the top documents
+                truncated_docs = truncated_docs[:max_docs]
+            
+            # Build the RAG context
+            rag_context = "The following information may be relevant to the question:\n\n"
+            rag_context += "\n\n".join([f"Document {i+1}:\n{doc}" for i, doc in enumerate(truncated_docs)])
+            rag_context += "\n\nUsing the above information, answer the following question."
+            
+            if system_prompt:
+                enhanced_system_prompt = f"{system_prompt.strip()}\n\n{rag_context}"
+            else:
+                enhanced_system_prompt = rag_context
+            
+            # Generate response with enhanced context
+            response = await self.generate(
+                prompt=prompt,
+                system_prompt=enhanced_system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                context=context
+            )
+            
+            # Ensure we have a valid string response
+            if not response or not isinstance(response, str):
+                return "Error: Invalid response format from model"
+            
+            return response.strip()
+        except Exception as e:
+            import logging
+            logging.error(f"Error in HuggingFaceModel.generate_with_rag: {str(e)}", exc_info=True)
+            return f"Error generating response with RAG: {str(e)}"

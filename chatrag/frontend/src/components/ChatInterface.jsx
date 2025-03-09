@@ -30,11 +30,14 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
   useEffect(() => {
     if (lastMessage) {
       try {
+        console.log('Received WebSocket message:', lastMessage.data);
         const data = JSON.parse(lastMessage.data);
+        console.log('Parsed WebSocket data:', data);
         
         switch (data.type) {
           case 'message':
             // Add new message to the chat
+            console.log('Adding message to chat:', data);
             setMessages(prev => [...prev, {
               id: data.id,
               role: data.role,
@@ -63,23 +66,36 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
             
           case 'error':
             // Handle error
-            console.error('Error from server:', data.content);
+            console.error('Error from server:', data.error);
             setMessages(prev => [...prev, {
               id: 'error-' + Date.now(),
               role: 'system',
-              content: `Error: ${data.content}`,
+              content: `Error: ${data.error}`,
               timestamp: data.timestamp,
               isError: true
             }]);
             setIsTyping(false);
             break;
             
+          case 'warning':
+            // Handle warning
+            console.warn('Warning from server:', data.message);
+            setMessages(prev => [...prev, {
+              id: 'warning-' + Date.now(),
+              role: 'system',
+              content: `Warning: ${data.message}`,
+              timestamp: data.timestamp,
+              isWarning: true
+            }]);
+            break;
+            
           default:
-            // Ignore other message types
+            // Log unknown message types
+            console.log('Unknown message type:', data.type);
             break;
         }
       } catch (err) {
-        console.error('Error parsing WebSocket message:', err);
+        console.error('Error parsing WebSocket message:', err, lastMessage.data);
       }
     }
   }, [lastMessage]);

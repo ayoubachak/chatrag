@@ -48,20 +48,8 @@ async def websocket_chat(websocket: WebSocket, user_id: str):
     await connection_manager.connect(websocket, user_id)
     chat_logger.info(f"User {user_id} connected to chat websocket")
     
-    # Initialize or load RAG pipeline for this user
-    rag_pipeline = RAGPipeline()
-    rag_session = connection_manager.get_user_rag_session(user_id)
-    if rag_session:
-        try:
-            chat_logger.info(f"Loading RAG session for user {user_id} from path: {rag_session}")
-            rag_pipeline = await RAGPipeline.load(rag_session)
-            chat_logger.info(f"RAG session loaded successfully. Vector store has {len(rag_pipeline.vector_store.embeddings)} embeddings")
-        except Exception as e:
-            # If loading fails, use a new pipeline
-            chat_logger.error(f"Error loading RAG session: {str(e)}", exc_info=True)
-            chat_logger.info(f"Using a new RAG pipeline instead")
-    else:
-        chat_logger.info(f"No existing RAG session found for user {user_id}")
+    # Start a heartbeat task to keep the connection alive
+    heartbeat_task = asyncio.create_task(send_heartbeat(user_id))
     
     try:
         # Send initial connection acknowledgment
@@ -86,16 +74,9 @@ async def websocket_chat(websocket: WebSocket, user_id: str):
                 # Process the message
                 if message_data.get("type") == "message":
                     chat_logger.info(f"Received chat message from user {user_id}")
-                    await process_chat_message(user_id, message_data, rag_pipeline)
+                    # Process message in a separate task to avoid blocking
+                    asyncio.create_task(process_chat_message(user_id, message_data))
                     
-                    # Save the RAG session after processing
-                    try:
-                        vector_store_path = await rag_pipeline.save()
-                        connection_manager.set_user_rag_session(user_id, vector_store_path)
-                        chat_logger.info(f"Saved RAG session after chat to {vector_store_path} with {len(rag_pipeline.vector_store.embeddings)} embeddings")
-                    except Exception as e:
-                        chat_logger.error(f"Error saving RAG session after chat: {str(e)}", exc_info=True)
-                        
             except json.JSONDecodeError:
                 chat_logger.error(f"Invalid JSON received from user {user_id}: {data}")
                 await connection_manager.send_message(
@@ -110,26 +91,47 @@ async def websocket_chat(websocket: WebSocket, user_id: str):
     except WebSocketDisconnect:
         chat_logger.info(f"User {user_id} disconnected from chat websocket")
         connection_manager.disconnect(user_id)
+        # Cancel the heartbeat task
+        heartbeat_task.cancel()
     except Exception as e:
         chat_logger.error(f"Error in websocket chat: {str(e)}", exc_info=True)
-        try:
-            # Try to save the RAG session before disconnecting
-            vector_store_path = await rag_pipeline.save()
-            connection_manager.set_user_rag_session(user_id, vector_store_path)
-            chat_logger.info(f"Saved RAG session before disconnect to {vector_store_path}")
-        except Exception as e:
-            chat_logger.error(f"Error saving RAG session: {str(e)}", exc_info=True)
+        # Cancel the heartbeat task
+        heartbeat_task.cancel()
 
-# In websockets/chat.py, modify the process_chat_message function:
 
-async def process_chat_message(user_id: str, data: Dict, rag_pipeline: RAGPipeline):
+async def send_heartbeat(user_id: str):
+    """
+    Send periodic heartbeat messages to keep the connection alive.
+    
+    Args:
+        user_id: The user's ID
+    """
+    try:
+        while True:
+            # Send a heartbeat every 15 seconds
+            await asyncio.sleep(15)
+            if user_id in connection_manager.active_connections:
+                await connection_manager.send_message(
+                    user_id,
+                    {
+                        "type": "heartbeat",
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+    except asyncio.CancelledError:
+        # Task was cancelled, exit gracefully
+        pass
+    except Exception as e:
+        chat_logger.error(f"Error in heartbeat task: {str(e)}", exc_info=True)
+
+
+async def process_chat_message(user_id: str, data: Dict):
     """
     Process a chat message and generate a response.
     
     Args:
         user_id: The user's ID
         data: The message data
-        rag_pipeline: The RAG pipeline for this user
     """
     # Extract message content
     prompt = data.get("content", "")
@@ -146,22 +148,44 @@ async def process_chat_message(user_id: str, data: Dict, rag_pipeline: RAGPipeli
     
     chat_logger.info(f"Processing chat message from user {user_id}: '{prompt[:50]}...' (use_rag={use_rag}, model={model_type})")
     
-    # IMPORTANT CHANGE: Check if there's an updated RAG session and reload if necessary
+    # Initialize RAG pipeline for this specific request if needed
+    rag_pipeline = None
+    
     if use_rag:
+        # Load the RAG pipeline from the user's session
         rag_session = connection_manager.get_user_rag_session(user_id)
         if rag_session:
             try:
-                chat_logger.info(f"Reloading latest RAG session before processing: {rag_session}")
+                chat_logger.info(f"Loading RAG session for user {user_id} from path: {rag_session}")
                 rag_pipeline = await RAGPipeline.load(rag_session)
-                chat_logger.info(f"Reloaded RAG pipeline with {len(rag_pipeline.vector_store.embeddings)} embeddings")
+                chat_logger.info(f"Loaded RAG pipeline with {len(rag_pipeline.vector_store.embeddings)} embeddings")
             except Exception as e:
-                chat_logger.error(f"Error reloading RAG session: {str(e)}", exc_info=True)
+                chat_logger.error(f"Error loading RAG session: {str(e)}", exc_info=True)
+                # Create a new pipeline if loading fails
+                rag_pipeline = RAGPipeline()
+        else:
+            # Create a new pipeline if no session exists
+            chat_logger.info(f"No RAG session found for user {user_id}, creating new pipeline")
+            rag_pipeline = RAGPipeline()
     
     # Get conversation history (if provided)
     context = data.get("context", [])
     
     # Get the appropriate model
-    model = get_model(model_type)
+    try:
+        model = get_model(model_type)
+    except Exception as e:
+        error_message = f"Error initializing {model_type} model: {str(e)}"
+        chat_logger.error(error_message, exc_info=True)
+        await connection_manager.send_message(
+            user_id,
+            {
+                "type": "error",
+                "error": error_message,
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+        return
     
     # Send typing indicator
     await connection_manager.send_message(
@@ -176,7 +200,7 @@ async def process_chat_message(user_id: str, data: Dict, rag_pipeline: RAGPipeli
     try:
         # Generate response
         sources = []
-        if use_rag:
+        if use_rag and rag_pipeline:
             # Query the RAG system
             chat_logger.info(f"Using RAG for query: '{prompt[:50]}...' with vector store containing {len(rag_pipeline.vector_store.embeddings)} embeddings")
             
@@ -199,36 +223,59 @@ async def process_chat_message(user_id: str, data: Dict, rag_pipeline: RAGPipeli
                     context=context
                 )
             else:
-                retrieved_docs = await rag_pipeline.query(prompt, top_k=5)
-                chat_logger.info(f"Retrieved {len(retrieved_docs)} documents from RAG")
-                
-                # Extract the content from retrieved documents
-                doc_contents = [doc["content"] for doc in retrieved_docs]
-                
-                # Log retrieved documents
-                for i, doc in enumerate(retrieved_docs):
-                    chat_logger.debug(f"Retrieved document {i+1}: Score {doc['score']:.4f}, Content: '{doc['content'][:50]}...'")
-                
-                # Generate response with RAG context
-                chat_logger.info(f"Generating response with RAG using {model_type} model")
-                response = await model.generate_with_rag(
-                    prompt=prompt,
-                    documents=doc_contents,
-                    system_prompt=system_prompt,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    context=context
-                )
-                
-                # Include retrieved documents in response metadata
-                sources = [
-                    {
-                        "content": doc["content"],
-                        "metadata": doc["metadata"],
-                        "score": doc["score"]
-                    }
-                    for doc in retrieved_docs
-                ]
+                try:
+                    retrieved_docs = await rag_pipeline.query(prompt, top_k=5)
+                    chat_logger.info(f"Retrieved {len(retrieved_docs)} documents from RAG")
+                    
+                    # Extract the content from retrieved documents
+                    doc_contents = [doc["content"] for doc in retrieved_docs]
+                    
+                    # Log retrieved documents
+                    for i, doc in enumerate(retrieved_docs):
+                        chat_logger.debug(f"Retrieved document {i+1}: Score {doc['score']:.4f}, Content: '{doc['content'][:50]}...'")
+                    
+                    # Generate response with RAG context
+                    chat_logger.info(f"Generating response with RAG using {model_type} model")
+                    response = await model.generate_with_rag(
+                        prompt=prompt,
+                        documents=doc_contents,
+                        system_prompt=system_prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        context=context
+                    )
+                    
+                    # Check if response is valid
+                    if not response or not isinstance(response, str):
+                        raise ValueError(f"Invalid response from {model_type} model with RAG: {response}")
+                    
+                    # Include retrieved documents in response metadata
+                    sources = [
+                        {
+                            "content": doc["content"],
+                            "metadata": doc["metadata"],
+                            "score": doc["score"]
+                        }
+                        for doc in retrieved_docs
+                    ]
+                except Exception as e:
+                    chat_logger.error(f"Error in RAG processing with {model_type} model: {str(e)}", exc_info=True)
+                    # Fallback to non-RAG response
+                    response = await model.generate(
+                        prompt=prompt,
+                        system_prompt=system_prompt,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        context=context
+                    )
+                    await connection_manager.send_message(
+                        user_id,
+                        {
+                            "type": "warning",
+                            "message": f"Error using RAG with {model_type} model. Falling back to standard response.",
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
         else:
             # Generate response without RAG
             chat_logger.info(f"Generating response without RAG using {model_type} model")
@@ -248,23 +295,22 @@ async def process_chat_message(user_id: str, data: Dict, rag_pipeline: RAGPipeli
             {
                 "type": "message",
                 "content": response,
-                "sources": sources,
+                "role": "assistant",
+                "id": f"assistant-{uuid.uuid4()}",
+                "metadata": {"sources": sources} if sources else {},
                 "timestamp": datetime.now().isoformat()
             }
         )
         
-        # Save the RAG pipeline if necessary
-        if use_rag:
+        # Save the RAG pipeline if it was used
+        if use_rag and rag_pipeline:
             try:
-                # Get the current RAG session path
-                rag_session = connection_manager.get_user_rag_session(user_id)
-                
-                # If we have a path, save to it; otherwise, generate a new one
-                vector_store_path = await rag_pipeline.save(rag_session)
+                # Save to the user's RAG session
+                vector_store_path = await rag_pipeline.save()
                 connection_manager.set_user_rag_session(user_id, vector_store_path)
-                chat_logger.info(f"Saved RAG pipeline after chat to {vector_store_path} with {len(rag_pipeline.vector_store.embeddings)} embeddings")
+                chat_logger.info(f"Saved RAG pipeline to {vector_store_path} with {len(rag_pipeline.vector_store.embeddings)} embeddings")
             except Exception as e:
-                chat_logger.error(f"Error saving RAG session after chat: {str(e)}", exc_info=True)
+                chat_logger.error(f"Error saving RAG session: {str(e)}", exc_info=True)
             
     except Exception as e:
         # Send error message
