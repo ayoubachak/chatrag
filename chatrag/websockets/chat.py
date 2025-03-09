@@ -76,6 +76,16 @@ async def websocket_chat(websocket: WebSocket, user_id: str):
                     chat_logger.info(f"Received chat message from user {user_id}")
                     # Process message in a separate task to avoid blocking
                     asyncio.create_task(process_chat_message(user_id, message_data))
+                elif message_data.get("type") == "ping":
+                    # Respond to ping with a pong to keep the connection alive
+                    chat_logger.debug(f"Received ping from user {user_id}")
+                    await connection_manager.send_message(
+                        user_id,
+                        {
+                            "type": "pong",
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
                     
             except json.JSONDecodeError:
                 chat_logger.error(f"Invalid JSON received from user {user_id}: {data}")

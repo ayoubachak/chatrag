@@ -89,6 +89,16 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
             }]);
             break;
             
+          case 'heartbeat':
+            // Ignore heartbeat messages
+            console.log('Received heartbeat');
+            break;
+            
+          case 'connection_status':
+            // Handle connection status updates
+            console.log('Connection status:', data.status);
+            break;
+            
           default:
             // Log unknown message types
             console.log('Unknown message type:', data.type);
@@ -126,8 +136,11 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
     
     setMessages(prev => [...prev, userMessage]);
     
+    // Show typing indicator immediately
+    setIsTyping(true);
+    
     // Send message to server
-    sendMessage(JSON.stringify({
+    const success = sendMessage(JSON.stringify({
       type: 'message',
       content: input,
       use_rag: useRag,
@@ -137,6 +150,18 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
         content: msg.content 
       }))
     }));
+    
+    // If sending failed, show an error
+    if (!success) {
+      setMessages(prev => [...prev, {
+        id: 'error-' + Date.now(),
+        role: 'system',
+        content: 'Error: Failed to send message. Please check your connection and try again.',
+        timestamp: new Date().toISOString(),
+        isError: true
+      }]);
+      setIsTyping(false);
+    }
     
     // Clear input
     setInput('');

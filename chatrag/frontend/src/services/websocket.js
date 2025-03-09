@@ -7,12 +7,25 @@ export const useWebSocket = (url) => {
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const maxReconnectAttempts = 5;
   const reconnectDelay = 3000; // 3 seconds
+  const pingInterval = 30000; // 30 seconds
 
   // Initialize WebSocket connection
   useEffect(() => {
     // Create a new WebSocket connection
     const ws = new WebSocket(url);
     setSocket(ws);
+
+    // Set up ping interval to keep connection alive
+    const pingTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        // Send a ping to keep the connection alive
+        try {
+          ws.send(JSON.stringify({ type: 'ping' }));
+        } catch (e) {
+          console.error('Error sending ping:', e);
+        }
+      }
+    }, pingInterval);
 
     // Connection event handlers
     ws.onopen = () => {
@@ -40,11 +53,25 @@ export const useWebSocket = (url) => {
     };
 
     ws.onmessage = (message) => {
+      try {
+        // Parse the message to check if it's a heartbeat
+        const data = JSON.parse(message.data);
+        if (data.type === 'heartbeat') {
+          // Just log heartbeat, don't update lastMessage
+          console.log('Received heartbeat:', data.timestamp);
+          return;
+        }
+      } catch (e) {
+        // If parsing fails, treat as a regular message
+      }
+      
+      // Set as last message for other message types
       setLastMessage(message);
     };
 
     // Clean up on unmount
     return () => {
+      clearInterval(pingTimer);
       if (ws) {
         ws.close();
       }
