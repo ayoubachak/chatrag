@@ -4,3 +4,7 @@
 uploads/
 vectore_store/
 *.log
+*.bin
+*.sqlite3
+*.json
+*.index

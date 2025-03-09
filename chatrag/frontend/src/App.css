@@ -40,3 +40,249 @@
 .read-the-docs {
   color: #888;
 }
+
+/* RAG Selector Styles */
+.rag-options {
+  margin-top: 15px;
+  padding: 10px;
+  background-color: rgba(0, 0, 0, 0.05);
+  border-radius: 8px;
+}
+
+.rag-options h4 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 14px;
+  color: #555;
+}
+
+.rag-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.rag-select {
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  background-color: white;
+  font-size: 14px;
+  width: 100%;
+}
+
+.rag-description {
+  font-size: 12px;
+  color: #666;
+  font-style: italic;
+  margin-top: 5px;
+}
+
+/* Update file upload styles to show RAG type */
+.upload-status p {
+  margin-top: 8px;
+  font-size: 14px;
+  color: #555;
+}
+
+/* Add styles for different RAG types */
+.file-item.file-success::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+}
+
+.file-item.file-success[data-rag="basic"]::before {
+  background-color: #4caf50;
+}
+
+.file-item.file-success[data-rag="faiss"]::before {
+  background-color: #2196f3;
+}
+
+.file-item.file-success[data-rag="chroma"]::before {
+  background-color: #9c27b0;
+}
+
+.file-item.file-success[data-rag="hybrid"]::before {
+  background-color: #ff9800;
+}
+
+.file-rag-type {
+  font-size: 10px;
+  background-color: #f0f0f0;
+  padding: 2px 5px;
+  border-radius: 3px;
+  margin-left: 5px;
+  color: #555;
+}
+
+.file-item[data-rag="basic"] .file-rag-type {
+  background-color: rgba(76, 175, 80, 0.2);
+  color: #2e7d32;
+}
+
+.file-item[data-rag="faiss"] .file-rag-type {
+  background-color: rgba(33, 150, 243, 0.2);
+  color: #0d47a1;
+}
+
+.file-item[data-rag="chroma"] .file-rag-type {
+  background-color: rgba(156, 39, 176, 0.2);
+  color: #4a148c;
+}
+
+.file-item[data-rag="hybrid"] .file-rag-type {
+  background-color: rgba(255, 152, 0, 0.2);
+  color: #e65100;
+}
+
+/* Benchmark Styles */
+.benchmark-container {
+  margin-top: 20px;
+}
+
+.benchmark-button {
+  width: 100%;
+  padding: 10px;
+  background-color: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.benchmark-button:hover:not(:disabled) {
+  background-color: #e0e0e0;
+}
+
+.benchmark-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.benchmark-options {
+  margin-top: 10px;
+  padding: 15px;
+  background-color: #f9f9f9;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.benchmark-options h4 {
+  margin-top: 0;
+  margin-bottom: 15px;
+  font-size: 14px;
+}
+
+.option-group {
+  margin-bottom: 12px;
+}
+
+.option-group label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 13px;
+}
+
+.option-group input[type="number"] {
+  width: 80px;
+  padding: 5px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+}
+
+.checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 5px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+}
+
+.checkbox-label input {
+  margin-right: 5px;
+}
+
+.run-benchmark-button {
+  width: 100%;
+  padding: 8px;
+  background-color: #4caf50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-top: 10px;
+}
+
+.run-benchmark-button:hover:not(:disabled) {
+  background-color: #45a049;
+}
+
+.run-benchmark-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.benchmark-note {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #666;
+  font-style: italic;
+}
+
+/* Benchmark Results */
+.benchmark-results {
+  margin-top: 15px;
+  padding: 15px;
+  background-color: #f0f8ff;
+  border: 1px solid #b8daff;
+  border-radius: 4px;
+}
+
+.benchmark-results h4 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.benchmark-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.benchmark-table th,
+.benchmark-table td {
+  padding: 6px;
+  border: 1px solid #ddd;
+  text-align: center;
+}
+
+.benchmark-table th {
+  background-color: #f2f2f2;
+}
+
+.benchmark-summary {
+  margin-top: 15px;
+  font-size: 13px;
+}
+
+.benchmark-summary p {
+  margin: 5px 0;
+}
+
+.benchmark-winner {
+  font-weight: bold;
+  color: #2e7d32;
+}

@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 # Import routes
-from routes import files
+from routes import files, benchmark
 from websockets import chat
 from dotenv import load_dotenv
 
@@ -27,6 +27,7 @@ app.add_middleware(
 # Include routers
 app.include_router(files.router, prefix="/api", tags=["files"])
 app.include_router(chat.router, tags=["chat"])
+app.include_router(benchmark.router, prefix="/api", tags=["benchmark"])
 
 # Create uploads directory if it doesn't exist
 uploads_dir = Path("uploads")
@@ -35,6 +36,11 @@ uploads_dir.mkdir(exist_ok=True)
 # Create vector store directory if it doesn't exist
 vector_store_dir = Path("vector_store")
 vector_store_dir.mkdir(exist_ok=True)
+
+# Create directories for different vector store types
+Path("chroma_store").mkdir(exist_ok=True)
+Path("hybrid_store").mkdir(exist_ok=True)
+Path("benchmark_results").mkdir(exist_ok=True)
 
 @app.get("/api/health")
 async def health_check():

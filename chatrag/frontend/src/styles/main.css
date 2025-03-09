@@ -85,6 +85,7 @@
   
   .chat-sidebar {
     width: 300px;
+    overflow-y: auto;
     border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
@@ -420,23 +421,21 @@
   .toggle-button {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    padding: 0.75rem;
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius);
-    background-color: white;
+    padding: 6px 10px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    background-color: #fff;
     cursor: pointer;
-    transition: var(--transition);
+    transition: all 0.2s ease;
   }
   
   .toggle-button:hover {
-    background-color: #f0f7ff;
+    background-color: #e9ecef;
   }
   
   .toggle-button.active {
-    background-color: #e6f0ff;
-    border-color: var(--primary-color);
+    background-color: #e6f7ff;
+    border-color: #1890ff;
   }
   
   .toggle-icon {
@@ -452,30 +451,31 @@
   
   .toggle-switch {
     position: relative;
-    width: 40px;
-    height: 20px;
-    background-color: var(--secondary-color);
+    width: 36px;
+    height: 18px;
+    background-color: #e9ecef;
     border-radius: 10px;
-    transition: var(--transition);
+    margin-left: 8px;
+    transition: background-color 0.2s;
   }
   
   .toggle-button.active .toggle-switch {
-    background-color: var(--primary-color);
+    background-color: #1890ff;
   }
   
   .toggle-handle {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
+    width: 14px;
+    height: 14px;
     background-color: white;
-    transition: var(--transition);
+    border-radius: 50%;
+    transition: transform 0.2s;
   }
   
   .toggle-button.active .toggle-handle {
-    left: 22px;
+    transform: translateX(18px);
   }
   
   /* File Upload */
@@ -545,12 +545,10 @@
   
   .file-item {
     display: flex;
+    flex-wrap: wrap;
+    padding: 8px;
+    border-bottom: 1px solid #eee;
     align-items: center;
-    padding: 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius);
-    margin-bottom: 0.5rem;
-    background-color: white;
   }
   
   .file-processing {
@@ -567,10 +565,16 @@
   
   .file-name {
     flex: 1;
+    font-weight: bold;
+    margin-right: 10px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 0.875rem;
+  }
+  
+  .file-status, .file-rag-type, .file-chunking-strategy {
+    font-size: 12px;
+    color: #666;
   }
   
   .file-status {
@@ -667,4 +671,217 @@
     .message {
       max-width: 90%;
     }
+  }
+
+  /* Chunking Selector Styles */
+  .chunking-selector {
+    margin-bottom: 10px;
+  }
+
+  .chunking-select {
+    width: 100%;
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    background-color: #fff;
+    font-size: 14px;
+    margin-bottom: 5px;
+  }
+
+  .chunking-description {
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+  }
+
+  .file-chunking-strategy {
+    font-size: 12px;
+    color: #666;
+    margin-left: 10px;
+  }
+
+  /* RAG Settings Panel */
+  .rag-settings-panel {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-radius: 6px;
+    border: 1px solid #e9ecef;
+  }
+
+  .control-group {
+    margin-bottom: 15px;
+  }
+
+  .control-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+    font-size: 14px;
+    color: #495057;
+  }
+
+  /* RAG Type Buttons */
+  .rag-type-buttons, .chunking-type-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .rag-type-button, .chunking-type-button {
+    padding: 6px 12px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    background-color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .rag-type-button:hover, .chunking-type-button:hover {
+    background-color: #e9ecef;
+  }
+
+  .rag-type-button.active, .chunking-type-button.active {
+    background-color: #007bff;
+    color: white;
+    border-color: #007bff;
+  }
+
+  .rag-description, .chunking-description {
+    font-size: 12px;
+    color: #6c757d;
+    margin-top: 5px;
+    line-height: 1.4;
+  }
+
+  /* File Details */
+  .file-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 5px;
+    font-size: 12px;
+    color: #6c757d;
+  }
+
+  .file-rag-type, .file-chunking-strategy {
+    background-color: #f1f3f5;
+    padding: 2px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+
+  /* File Upload Improvements */
+  .upload-settings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 8px;
+    justify-content: center;
+  }
+
+  .upload-setting {
+    background-color: rgba(255, 255, 255, 0.2);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  .current-settings {
+    margin-top: 8px;
+    text-align: center;
+  }
+
+  .current-settings small {
+    color: #6c757d;
+  }
+
+  .current-settings strong {
+    color: #495057;
+  }
+
+  /* Benchmark Section */
+  .benchmark-section {
+    margin-top: 10px;
+  }
+
+  .benchmark-button {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    background-color: #f8f9fa;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+  }
+
+  .benchmark-button:hover {
+    background-color: #e9ecef;
+  }
+
+  .benchmark-results {
+    margin-top: 15px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+
+  .benchmark-result-item {
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e9ecef;
+  }
+
+  .benchmark-result-item:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
+  }
+
+  .benchmark-metric {
+    font-weight: 600;
+    margin-right: 5px;
+  }
+
+  .benchmark-value {
+    float: right;
+    color: #495057;
+  }
+
+  /* RAG Section Improvements */
+  .rag-section {
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 15px;
+    background-color: #f8f9fa;
+  }
+
+  .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+  }
+
+  .section-header h3 {
+    margin: 0;
+    font-size: 16px;
+    color: #343a40;
+  }
+
+  .rag-disabled-message {
+    padding: 10px;
+    background-color: #e9ecef;
+    border-radius: 4px;
+    font-size: 14px;
+    color: #6c757d;
+    text-align: center;
+    margin-top: 10px;
   }

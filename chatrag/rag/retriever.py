@@ -5,8 +5,9 @@ import pickle
 from pathlib import Path
 import uuid
 from .logger import retriever_logger
+from .base_retriever import BaseVectorStore
 
-class VectorStore:
+class VectorStore(BaseVectorStore):
     """
     A simple in-memory vector store for document retrieval.
     
@@ -21,8 +22,7 @@ class VectorStore:
         Args:
             storage_dir: Directory to save the vector store
         """
-        self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        super().__init__(storage_dir)
         
         # In-memory storage
         self.document_ids = []
@@ -30,9 +30,7 @@ class VectorStore:
         self.document_metadata = []
         self.embeddings = []
         
-        # Unique ID for this session
-        self.session_id = str(uuid.uuid4())
-        retriever_logger.info(f"Initialized vector store with session ID: {self.session_id}")
+        retriever_logger.info(f"Initialized basic vector store with session ID: {self.session_id}")
         
     async def add_documents(self, 
                            documents: List[Dict[str, Any]], 
@@ -44,7 +42,7 @@ class VectorStore:
             documents: List of document dictionaries (content and metadata)
             embeddings: List of embedding vectors for the documents
         """
-        retriever_logger.info(f"Adding {len(documents)} documents to vector store")
+        retriever_logger.info(f"Adding {len(documents)} documents to basic vector store")
         retriever_logger.debug(f"Embeddings received: {len(embeddings)} with type {type(embeddings)}")
         
         if len(documents) != len(embeddings):
@@ -64,7 +62,7 @@ class VectorStore:
             self.document_metadata.append(doc["metadata"])
             self.embeddings.append(embedding)
             
-        retriever_logger.info(f"Vector store now contains {len(self.document_ids)} documents and {len(self.embeddings)} embeddings")
+        retriever_logger.info(f"Basic vector store now contains {len(self.document_ids)} documents and {len(self.embeddings)} embeddings")
             
     async def search(self, 
                     query_embedding: List[float], 
@@ -79,10 +77,10 @@ class VectorStore:
         Returns:
             List of document dictionaries with similarity scores
         """
-        retriever_logger.info(f"Searching vector store with {len(self.embeddings)} embeddings")
+        retriever_logger.info(f"Searching basic vector store with {len(self.embeddings)} embeddings")
         
         if not self.embeddings:
-            retriever_logger.warning("No embeddings in vector store")
+            retriever_logger.warning("No embeddings in basic vector store")
             return []
             
         # Convert lists to numpy arrays for faster computation
@@ -125,18 +123,21 @@ class VectorStore:
                 "score": float(similarities[idx])
             })
             
-        retriever_logger.info(f"Returning {len(results)} search results")
+        retriever_logger.info(f"Returning {len(results)} search results from basic vector store")
         for i, result in enumerate(results):
             retriever_logger.debug(f"Result {i+1}: Score {result['score']:.4f}, Content: '{result['content'][:50]}...'")
             
         return results
         
-    async def save(self, filepath: Optional[str] = None):
+    async def save(self, filepath: Optional[str] = None) -> str:
         """
         Save the vector store to disk.
         
         Args:
             filepath: Optional path to save the vector store
+            
+        Returns:
+            Path to the saved vector store
         """
         if filepath is None:
             filepath = self.storage_dir / f"vector_store_{self.session_id}.pkl"
@@ -153,7 +154,7 @@ class VectorStore:
             "session_id": self.session_id
         }
         
-        retriever_logger.info(f"Saving vector store with {len(self.embeddings)} embeddings to {filepath}")
+        retriever_logger.info(f"Saving basic vector store with {len(self.embeddings)} embeddings to {filepath}")
         
         # Verify data integrity before saving
         if len(self.document_ids) != len(self.embeddings):
@@ -163,9 +164,9 @@ class VectorStore:
         try:
             with open(filepath, "wb") as f:
                 pickle.dump(data, f)
-            retriever_logger.info(f"Successfully saved vector store to {filepath}")
+            retriever_logger.info(f"Successfully saved basic vector store to {filepath}")
         except Exception as e:
-            retriever_logger.error(f"Error saving vector store to {filepath}: {str(e)}", exc_info=True)
+            retriever_logger.error(f"Error saving basic vector store to {filepath}: {str(e)}", exc_info=True)
             
         return filepath
         
@@ -180,12 +181,12 @@ class VectorStore:
         Returns:
             A new VectorStore instance
         """
-        retriever_logger.info(f"Loading vector store from: {filepath}")
+        retriever_logger.info(f"Loading basic vector store from: {filepath}")
         
         try:
             # Check if the file exists
             if not os.path.exists(filepath):
-                retriever_logger.warning(f"Vector store file does not exist: {filepath}")
+                retriever_logger.warning(f"Basic vector store file does not exist: {filepath}")
                 return cls()
                 
             with open(filepath, "rb") as f:
@@ -198,7 +199,7 @@ class VectorStore:
             required_keys = ["document_ids", "document_texts", "document_metadata", "embeddings", "session_id"]
             for key in required_keys:
                 if key not in data:
-                    retriever_logger.warning(f"Missing key '{key}' in loaded vector store data")
+                    retriever_logger.warning(f"Missing key '{key}' in loaded basic vector store data")
                     return cls()
             
             # Restore the data
@@ -212,9 +213,19 @@ class VectorStore:
             if len(store.document_ids) != len(store.embeddings):
                 retriever_logger.warning(f"Data integrity issue - document_ids ({len(store.document_ids)}) and embeddings ({len(store.embeddings)}) length mismatch")
             
-            retriever_logger.info(f"Successfully loaded vector store with {len(store.embeddings)} embeddings")
+            retriever_logger.info(f"Successfully loaded basic vector store with {len(store.embeddings)} embeddings")
             return store
         except Exception as e:
-            retriever_logger.error(f"Error loading vector store from {filepath}: {str(e)}", exc_info=True)
+            retriever_logger.error(f"Error loading basic vector store from {filepath}: {str(e)}", exc_info=True)
             # Return an empty store
             return cls()
+            
+    @property
+    def document_count(self) -> int:
+        """
+        Get the number of documents in the vector store.
+        
+        Returns:
+            Number of documents
+        """
+        return len(self.document_ids)

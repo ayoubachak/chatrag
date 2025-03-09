@@ -155,8 +155,10 @@ async def process_chat_message(user_id: str, data: Dict):
     system_prompt = data.get("system_prompt", "You are a helpful assistant.")
     temperature = data.get("temperature", 0.7)
     max_tokens = data.get("max_tokens", 1024)
+    rag_type = data.get("rag_type", "basic")  # Get RAG type from request or use default
+    chunking_strategy = data.get("chunking_strategy", "basic")  # Get chunking strategy from request or use default
     
-    chat_logger.info(f"Processing chat message from user {user_id}: '{prompt[:50]}...' (use_rag={use_rag}, model={model_type})")
+    chat_logger.info(f"Processing chat message from user {user_id}: '{prompt[:50]}...' (use_rag={use_rag}, model={model_type}, rag_type={rag_type}, chunking_strategy={chunking_strategy})")
     
     # Initialize RAG pipeline for this specific request if needed
     rag_pipeline = None
@@ -164,19 +166,26 @@ async def process_chat_message(user_id: str, data: Dict):
     if use_rag:
         # Load the RAG pipeline from the user's session
         rag_session = connection_manager.get_user_rag_session(user_id)
+        user_rag_type = connection_manager.get_user_rag_type(user_id)
+        user_chunking_strategy = connection_manager.get_user_chunking_strategy(user_id)
+        
+        # Use the user's stored settings if available, otherwise use the ones from the request
+        rag_type = user_rag_type if user_rag_type else rag_type
+        chunking_strategy = user_chunking_strategy if user_chunking_strategy else chunking_strategy
+        
         if rag_session:
             try:
-                chat_logger.info(f"Loading RAG session for user {user_id} from path: {rag_session}")
-                rag_pipeline = await RAGPipeline.load(rag_session)
-                chat_logger.info(f"Loaded RAG pipeline with {len(rag_pipeline.vector_store.embeddings)} embeddings")
+                chat_logger.info(f"Loading RAG session for user {user_id} from path: {rag_session} with type: {rag_type} and chunking strategy: {chunking_strategy}")
+                rag_pipeline = await RAGPipeline.load(rag_session, vector_store_type=rag_type, chunking_strategy=chunking_strategy)
+                chat_logger.info(f"Loaded RAG pipeline with type: {rag_type} and chunking strategy: {chunking_strategy}")
             except Exception as e:
                 chat_logger.error(f"Error loading RAG session: {str(e)}", exc_info=True)
                 # Create a new pipeline if loading fails
-                rag_pipeline = RAGPipeline()
+                rag_pipeline = RAGPipeline(vector_store_type=rag_type, chunking_strategy=chunking_strategy)
         else:
             # Create a new pipeline if no session exists
-            chat_logger.info(f"No RAG session found for user {user_id}, creating new pipeline")
-            rag_pipeline = RAGPipeline()
+            chat_logger.info(f"No RAG session found for user {user_id}, creating new pipeline with type: {rag_type} and chunking strategy: {chunking_strategy}")
+            rag_pipeline = RAGPipeline(vector_store_type=rag_type, chunking_strategy=chunking_strategy)
     
     # Get conversation history (if provided)
     context = data.get("context", [])
@@ -212,16 +221,28 @@ async def process_chat_message(user_id: str, data: Dict):
         sources = []
         if use_rag and rag_pipeline:
             # Query the RAG system
-            chat_logger.info(f"Using RAG for query: '{prompt[:50]}...' with vector store containing {len(rag_pipeline.vector_store.embeddings)} embeddings")
+            chat_logger.info(f"Using RAG ({rag_type}) for query: '{prompt[:50]}...'")
             
-            # Skip RAG if no embeddings are available
-            if not hasattr(rag_pipeline.vector_store, 'embeddings') or len(rag_pipeline.vector_store.embeddings) == 0:
-                chat_logger.warning(f"No embeddings available in the vector store, falling back to standard response")
+            # Check if vector store has documents (different check for each type)
+            has_documents = False
+            if rag_type == "basic" and hasattr(rag_pipeline.vector_store, 'embeddings'):
+                has_documents = len(rag_pipeline.vector_store.embeddings) > 0
+            elif rag_type == "faiss" and rag_pipeline.vector_store.index is not None:
+                has_documents = rag_pipeline.vector_store.index.ntotal > 0
+            elif rag_type == "chroma":
+                try:
+                    has_documents = rag_pipeline.vector_store.collection.count() > 0
+                except:
+                    has_documents = False
+            
+            # Skip RAG if no documents are available
+            if not has_documents:
+                chat_logger.warning(f"No documents available in the {rag_type} vector store, falling back to standard response")
                 await connection_manager.send_message(
                     user_id,
                     {
                         "type": "warning",
-                        "message": "No document embeddings found. Using standard response instead.",
+                        "message": f"No document embeddings found in {rag_type} store. Using standard response instead.",
                         "timestamp": datetime.now().isoformat()
                     }
                 )
@@ -235,7 +256,7 @@ async def process_chat_message(user_id: str, data: Dict):
             else:
                 try:
                     retrieved_docs = await rag_pipeline.query(prompt, top_k=5)
-                    chat_logger.info(f"Retrieved {len(retrieved_docs)} documents from RAG")
+                    chat_logger.info(f"Retrieved {len(retrieved_docs)} documents from {rag_type} RAG")
                     
                     # Extract the content from retrieved documents
                     doc_contents = [doc["content"] for doc in retrieved_docs]
@@ -300,25 +321,47 @@ async def process_chat_message(user_id: str, data: Dict):
         chat_logger.info(f"Generated response for user {user_id}: '{response[:50]}...'")
             
         # Send the response
-        await connection_manager.send_message(
-            user_id,
-            {
-                "type": "message",
-                "content": response,
-                "role": "assistant",
-                "id": f"assistant-{uuid.uuid4()}",
-                "metadata": {"sources": sources} if sources else {},
-                "timestamp": datetime.now().isoformat()
-            }
-        )
+        try:
+            chat_logger.info(f"Sending response to user {user_id}")
+            await connection_manager.send_message(
+                user_id,
+                {
+                    "type": "message",
+                    "content": response,
+                    "role": "assistant",
+                    "id": f"assistant-{uuid.uuid4()}",
+                    "metadata": {"sources": sources} if sources else {},
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+            chat_logger.info(f"Response sent successfully to user {user_id}")
+        except Exception as e:
+            chat_logger.error(f"Failed to send response to user {user_id}: {str(e)}", exc_info=True)
+            # Try one more time after a short delay
+            try:
+                await asyncio.sleep(0.5)
+                await connection_manager.send_message(
+                    user_id,
+                    {
+                        "type": "message",
+                        "content": response,
+                        "role": "assistant",
+                        "id": f"assistant-{uuid.uuid4()}",
+                        "metadata": {"sources": sources} if sources else {},
+                        "timestamp": datetime.now().isoformat()
+                    }
+                )
+                chat_logger.info(f"Response sent successfully on retry to user {user_id}")
+            except Exception as retry_error:
+                chat_logger.error(f"Failed to send response on retry to user {user_id}: {str(retry_error)}", exc_info=True)
         
         # Save the RAG pipeline if it was used
         if use_rag and rag_pipeline:
             try:
                 # Save to the user's RAG session
                 vector_store_path = await rag_pipeline.save()
-                connection_manager.set_user_rag_session(user_id, vector_store_path)
-                chat_logger.info(f"Saved RAG pipeline to {vector_store_path} with {len(rag_pipeline.vector_store.embeddings)} embeddings")
+                connection_manager.set_user_rag_session(user_id, vector_store_path, rag_type, chunking_strategy)
+                chat_logger.info(f"Saved RAG pipeline to {vector_store_path} with {rag_pipeline.vector_store.document_count} documents")
             except Exception as e:
                 chat_logger.error(f"Error saving RAG session: {str(e)}", exc_info=True)
             
