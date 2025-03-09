@@ -199,16 +199,18 @@ class LocalModel(BaseLanguageModel):
             start_time = time.time()
             self.logger.info(f"Starting streaming generation with {generation_config['max_new_tokens']} max tokens")
             
-            # Simpler approach: use the model's built-in streaming capability if available
+            # Approach 1: Use built-in streaming if available
             try:
-                # Check if the model supports streaming
                 if hasattr(self.model, 'generate_with_streaming') or hasattr(self.model.generate, 'with_streaming'):
-                    # Use the model's built-in streaming capability
                     self.logger.info("Using model's built-in streaming capability")
                     
-                    # Create a streamer
+                    # Create a streamer with skip_prompt=True to only get the new tokens
                     from transformers import TextIteratorStreamer
-                    streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
+                    streamer = TextIteratorStreamer(
+                        self.tokenizer,
+                        skip_special_tokens=True,
+                        skip_prompt=True
+                    )
                     
                     # Start generation in a separate thread
                     generation_kwargs = {
@@ -221,11 +223,34 @@ class LocalModel(BaseLanguageModel):
                     thread = threading.Thread(target=self.model.generate, kwargs=generation_kwargs)
                     thread.start()
                     
+                    # Variables to control streaming
+                    full_text = ""
+                    prev_text = ""
+                    buffer = ""
+                    
                     # Yield from the streamer
                     for text in streamer:
-                        self.logger.debug(f"Streaming chunk: {text}")
-                        yield text
+                        buffer += text
+                        
+                        # Process the buffer in larger chunks to maintain context
+                        # This helps with proper spacing between words
+                        if len(buffer) >= 5 or '.' in buffer or ',' in buffer or ' ' in buffer:
+                            # Decode the accumulated text to maintain context
+                            full_text += buffer
+                            
+                            # Only yield the new part
+                            to_yield = buffer
+                            
+                            self.logger.debug(f"Streaming chunk: {to_yield}")
+                            yield to_yield
+                            buffer = ""
+                        
                         await asyncio.sleep(0.01)
+                    
+                    # Yield any remaining buffer
+                    if buffer:
+                        self.logger.debug(f"Streaming final chunk: {buffer}")
+                        yield buffer
                     
                     # Wait for the thread to finish
                     thread.join()
@@ -236,11 +261,11 @@ class LocalModel(BaseLanguageModel):
                     return
             except Exception as e:
                 self.logger.warning(f"Built-in streaming failed, falling back to token-by-token: {str(e)}")
-                # Fall back to token-by-token generation
             
-            # Stream the response using token-by-token generation
-            input_length = inputs.input_ids.shape[1]
+            # Approach 2: Manual token-by-token streaming
+            # Initialize variables
             generated_tokens = []
+            accumulated_text = ""
             
             with torch.no_grad():
                 # Initial input
@@ -291,7 +316,6 @@ class LocalModel(BaseLanguageModel):
                     else:
                         next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
                     
-                    # Check if we've reached the end token
                     if next_token.item() == self.tokenizer.eos_token_id:
                         break
                     
@@ -301,13 +325,20 @@ class LocalModel(BaseLanguageModel):
                     # Update input for next iteration
                     current_input = torch.cat([current_input, next_token], dim=1)
                     
-                    # Decode the new token and yield it
-                    new_token_text = self.tokenizer.decode([next_token.item()], skip_special_tokens=True)
-                    if new_token_text:  # Only yield non-empty text
-                        self.logger.debug(f"Streaming token: {new_token_text}")
-                        yield new_token_text
-                        # Small delay to avoid overwhelming the client
-                        await asyncio.sleep(0.01)
+                    # Improved decoding: always decode the full sequence of generated tokens
+                    # This is key to preserving proper spacing
+                    current_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                    
+                    # Only yield the difference from previous
+                    if len(current_text) > len(accumulated_text):
+                        # Extract only the new part
+                        new_text = current_text[len(accumulated_text):]
+                        if new_text:  # Only yield non-empty text
+                            self.logger.debug(f"Streaming new text: {new_text}")
+                            yield new_text
+                            accumulated_text = current_text
+                            # Small delay to avoid overwhelming the client
+                            await asyncio.sleep(0.01)
             
             # Log generation time
             generation_time = time.time() - start_time
@@ -416,12 +447,12 @@ class LocalModel(BaseLanguageModel):
             return f"Error generating RAG response: {str(e)}"
             
     async def generate_with_rag_stream(self,
-                                    prompt: str,
-                                    documents: List[str],
-                                    system_prompt: Optional[str] = None,
-                                    temperature: float = 0.7,
-                                    max_tokens: int = 1024,
-                                    context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
+                                prompt: str,
+                                documents: List[str],
+                                system_prompt: Optional[str] = None,
+                                temperature: float = 0.7,
+                                max_tokens: int = 1024,
+                                context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response with RAG context using the local model.
         """
@@ -493,16 +524,19 @@ class LocalModel(BaseLanguageModel):
             start_time = time.time()
             self.logger.info(f"Starting streaming RAG generation with {generation_config['max_new_tokens']} max tokens")
             
-            # Simpler approach: use the model's built-in streaming capability if available
+            # Approach 1: Use the model's built-in streaming capability if available
             try:
-                # Check if the model supports streaming
                 if hasattr(self.model, 'generate_with_streaming') or hasattr(self.model.generate, 'with_streaming'):
                     # Use the model's built-in streaming capability
                     self.logger.info("Using model's built-in streaming capability for RAG")
                     
-                    # Create a streamer
+                    # Create a streamer with skip_prompt=True to only get the new tokens
                     from transformers import TextIteratorStreamer
-                    streamer = TextIteratorStreamer(self.tokenizer, skip_special_tokens=True)
+                    streamer = TextIteratorStreamer(
+                        self.tokenizer,
+                        skip_special_tokens=True,
+                        skip_prompt=True
+                    )
                     
                     # Start generation in a separate thread
                     generation_kwargs = {
@@ -515,11 +549,34 @@ class LocalModel(BaseLanguageModel):
                     thread = threading.Thread(target=self.model.generate, kwargs=generation_kwargs)
                     thread.start()
                     
+                    # Variables to control streaming
+                    full_text = ""
+                    prev_text = ""
+                    buffer = ""
+                    
                     # Yield from the streamer
                     for text in streamer:
-                        self.logger.debug(f"Streaming RAG chunk: {text}")
-                        yield text
+                        buffer += text
+                        
+                        # Process the buffer in larger chunks to maintain context
+                        # This helps with proper spacing between words
+                        if len(buffer) >= 5 or '.' in buffer or ',' in buffer or ' ' in buffer:
+                            # Decode the accumulated text to maintain context
+                            full_text += buffer
+                            
+                            # Only yield the new part
+                            to_yield = buffer
+                            
+                            self.logger.debug(f"Streaming RAG chunk: {to_yield}")
+                            yield to_yield
+                            buffer = ""
+                        
                         await asyncio.sleep(0.01)
+                    
+                    # Yield any remaining buffer
+                    if buffer:
+                        self.logger.debug(f"Streaming final RAG chunk: {buffer}")
+                        yield buffer
                     
                     # Wait for the thread to finish
                     thread.join()
@@ -532,9 +589,10 @@ class LocalModel(BaseLanguageModel):
                 self.logger.warning(f"Built-in streaming failed for RAG, falling back to token-by-token: {str(e)}")
                 # Fall back to token-by-token generation
             
-            # Stream the response using token-by-token generation
-            input_length = inputs.input_ids.shape[1]
+            # Approach 2: Manual token-by-token streaming
+            # Initialize variables
             generated_tokens = []
+            accumulated_text = ""
             
             with torch.no_grad():
                 # Initial input
@@ -595,13 +653,20 @@ class LocalModel(BaseLanguageModel):
                     # Update input for next iteration
                     current_input = torch.cat([current_input, next_token], dim=1)
                     
-                    # Decode the new token and yield it
-                    new_token_text = self.tokenizer.decode([next_token.item()], skip_special_tokens=True)
-                    if new_token_text:  # Only yield non-empty text
-                        self.logger.debug(f"Streaming RAG token: {new_token_text}")
-                        yield new_token_text
-                        # Small delay to avoid overwhelming the client
-                        await asyncio.sleep(0.01)
+                    # Improved decoding: always decode the full sequence of generated tokens
+                    # This is key to preserving proper spacing
+                    current_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                    
+                    # Only yield the difference from previous
+                    if len(current_text) > len(accumulated_text):
+                        # Extract only the new part
+                        new_text = current_text[len(accumulated_text):]
+                        if new_text:  # Only yield non-empty text
+                            self.logger.debug(f"Streaming RAG token: {new_text}")
+                            yield new_text
+                            accumulated_text = current_text
+                            # Small delay to avoid overwhelming the client
+                            await asyncio.sleep(0.01)
             
             # Log generation time
             generation_time = time.time() - start_time
