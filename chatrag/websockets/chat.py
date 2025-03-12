@@ -150,7 +150,9 @@ async def send_heartbeat(connection_id: str):
     except Exception as e:
         chat_logger.error(f"Error in heartbeat task: {str(e)}", exc_info=True)
 
-
+# For your own sake, don't try refactoring this function or even looking at it, it just works, somehow.
+# I'm also getting this code quality warning "Refactor this function to reduce its Cognitive Complexity from 201 to the 15 allowed. [+70 locations]" Lol.
+# Sincerly - Ayoub Achak
 async def process_chat_message(connection_id: str, data: Dict):
     """
     Process a chat message and generate a response.

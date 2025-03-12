@@ -13,7 +13,7 @@ const ChatInterface = ({ userId, onConnectionChange }) => {
   const [useRag, setUseRag] = useState(false);
   const [modelType, setModelType] = useState('local'); // 'local', 'huggingface', or 'lm_studio'
   const [ragType, setRagType] = useState('basic'); // 'basic', 'faiss', 'chroma', or 'hybrid'
-  const [chunkingStrategy, setChunkingStrategy] = useState('basic'); // 'basic' or 'super' or 'quantum'
+  const [chunkingStrategy, setChunkingStrategy] = useState('basic'); // 'basic' or 'super' or 'quantum
   const [sessionId, setSessionId] = useState(Date.now().toString()); // Add a session ID
   const [useStreaming, setUseStreaming] = useState(false); // Add streaming state, default to true
   
