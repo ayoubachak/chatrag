@@ -1,3 +1,10 @@
+"""
+Chat handling module - Provides WebSocket communication and message processing.
+
+This module handles all chat-related functionality including WebSocket connections,
+message processing, RAG integration, and response generation/streaming.
+"""
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from typing import Dict, List, Optional, Any, AsyncGenerator, Tuple, Callable, Union
 import json
@@ -13,7 +20,7 @@ from models.huggingface import HuggingFaceModel
 from models.local_model import LocalModel
 from models.lm_studio import LMStudioModel
 from models.utils import format_chat_history
-from rag.pipeline import RAGPipeline
+from rag.pipeline import RAGPipeline, create_default_rag_pipeline, load_rag_pipeline
 from .connection import connection_manager
 from .logger import chat_logger
 
@@ -86,7 +93,7 @@ class ChatMessage:
         self.max_tokens = data.get("max_tokens", 1024)
         self.rag_type = data.get("rag_type", "basic")
         self.chunking_strategy = data.get("chunking_strategy", "basic")
-        self.use_streaming = data.get("use_streaming", False)
+        self.use_streaming = data.get("use_streaming", True)  # Default to True for better UX
         self.context = data.get("context", [])
     
     def update_state(self, new_state: MessageState):
@@ -102,6 +109,8 @@ class ChatMessage:
         """Check if the connection is still active."""
         return self.connection_id in connection_manager.active_connections
 
+
+# Context managers for consistent processing and cleanup
 
 @asynccontextmanager
 async def manage_typing_indicator(message: ChatMessage):
@@ -136,6 +145,7 @@ async def track_message_processing(message: ChatMessage):
         raise  # Re-raise to ensure proper cleanup
 
 
+# Main message processing function
 async def process_chat_message(connection_id: str, data: Dict):
     """
     Process a chat message and generate a response.
@@ -295,8 +305,6 @@ async def initialize_rag_pipeline(message: ChatMessage) -> bool:
 
 async def create_new_rag_pipeline(message: ChatMessage) -> bool:
     """Create a new RAG pipeline."""
-    from rag.pipeline import create_default_rag_pipeline
-    
     try:
         # Extract user ID from connection ID
         user_id = message.connection_id.split(":")[0] if ":" in message.connection_id else message.connection_id
@@ -333,8 +341,6 @@ async def create_new_rag_pipeline(message: ChatMessage) -> bool:
 
 async def load_existing_rag_pipeline(message: ChatMessage, vector_store_path: str) -> bool:
     """Load an existing RAG pipeline."""
-    from rag.pipeline import load_rag_pipeline
-    
     try:
         # Get current RAG settings
         user_rag_type = connection_manager.get_user_rag_type(message.connection_id)
@@ -640,56 +646,46 @@ async def stream_response_chunks(message: ChatMessage, generator: AsyncGenerator
     
     try:
         # Process chunks from the generator
-        while True:
-            try:
-                # Get the next chunk
-                chunk = await generator.__anext__()
-                if not chunk:  # Skip empty chunks
-                    continue
-                    
-                full_response += chunk
+        async for chunk in generator:
+            if not chunk:  # Skip empty chunks
+                continue
                 
-                # Send chunk with retries
-                for retry in range(max_retries):
-                    if not message.is_connection_active():
+            full_response += chunk
+            
+            # Send chunk with retries
+            for retry in range(max_retries):
+                if not message.is_connection_active():
+                    chat_logger.warning(
+                        f"Connection {message.connection_id} no longer active, "
+                        "stopping chunk streaming"
+                    )
+                    return full_response
+                    
+                try:
+                    await connection_manager.send_message(
+                        message.connection_id,
+                        {
+                            "type": "message_chunk",
+                            "id": message.message_id,
+                            "chunk": chunk,
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
+                    break  # Successful send
+                except Exception as e:
+                    if retry == max_retries - 1:  # Last retry
+                        chat_logger.error(
+                            f"Failed to send chunk after {max_retries} attempts: {str(e)}",
+                            exc_info=True
+                        )
+                    else:
+                        # Exponential backoff
+                        delay = base_delay * (2 ** retry)
                         chat_logger.warning(
-                            f"Connection {message.connection_id} no longer active, "
-                            "stopping chunk streaming"
+                            f"Chunk send failed (attempt {retry+1}/{max_retries}), "
+                            f"retrying in {delay:.2f}s: {str(e)}"
                         )
-                        return full_response
-                        
-                    try:
-                        await connection_manager.send_message(
-                            message.connection_id,
-                            {
-                                "type": "message_chunk",
-                                "id": message.message_id,
-                                "chunk": chunk,
-                                "timestamp": datetime.now().isoformat()
-                            }
-                        )
-                        break  # Successful send
-                    except Exception as e:
-                        if retry == max_retries - 1:  # Last retry
-                            chat_logger.error(
-                                f"Failed to send chunk after {max_retries} attempts: {str(e)}",
-                                exc_info=True
-                            )
-                        else:
-                            # Exponential backoff
-                            delay = base_delay * (2 ** retry)
-                            chat_logger.warning(
-                                f"Chunk send failed (attempt {retry+1}/{max_retries}), "
-                                f"retrying in {delay:.2f}s: {str(e)}"
-                            )
-                            await asyncio.sleep(delay)
-                            
-            except StopAsyncIteration:
-                # End of generator
-                break
-            except Exception as chunk_error:
-                chat_logger.error(f"Error processing chunk: {str(chunk_error)}", exc_info=True)
-                break
+                        await asyncio.sleep(delay)
                 
     except Exception as e:
         chat_logger.error(f"Error in stream processing: {str(e)}", exc_info=True)
@@ -891,127 +887,6 @@ async def handle_error(connection_id: str, error_message: str, exception: Except
         await send_error(connection_id, error_message)
 
 
-# ------------------------ WebSocket Handler -----------------------
-
-@router.websocket("/ws/chat/{user_id}")
-async def websocket_chat(
-    websocket: WebSocket, 
-    user_id: str, 
-    session: str = None
-):
-    """
-    WebSocket endpoint for chat.
-    
-    Args:
-        websocket: The WebSocket connection
-        user_id: The user's ID
-        session: Optional session ID for managing multiple chat sessions
-    """
-    # Extract session from query parameters if not provided directly
-    if not session:
-        query_params = dict(websocket.query_params)
-        session = query_params.get("session", str(uuid.uuid4()))
-    
-    # Create a unique connection ID combining user_id and session
-    connection_id = f"{user_id}:{session}"
-    
-    # Initialize connection monitoring
-    connection_monitor_task = None
-    heartbeat_task = None
-    
-    try:
-        # Accept the connection
-        await connection_manager.connect(websocket, connection_id)
-        chat_logger.info(f"User {user_id} connected to chat websocket with session {session}")
-        
-        # Start monitoring tasks
-        heartbeat_task = asyncio.create_task(send_heartbeat(connection_id))
-        connection_monitor_task = asyncio.create_task(monitor_connection_health(connection_id))
-        
-        # Send initial connection acknowledgment
-        await connection_manager.send_message(
-            connection_id, 
-            {
-                "type": "connection_status",
-                "status": "connected",
-                "session": session,
-                "timestamp": datetime.now().isoformat()
-            }
-        )
-        
-        # Message processing loop
-        while True:
-            # Wait for messages with a reasonable timeout
-            try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
-            except asyncio.TimeoutError:
-                # No message received in timeout period, send a ping to check connection
-                if connection_id in connection_manager.active_connections:
-                    try:
-                        await connection_manager.send_message(
-                            connection_id,
-                            {
-                                "type": "ping",
-                                "timestamp": datetime.now().isoformat()
-                            }
-                        )
-                    except:
-                        # If ping fails, connection is probably dead
-                        chat_logger.warning(f"Ping failed for {connection_id}, closing connection")
-                        break
-                continue
-            
-            try:
-                # Parse the message
-                message_data = json.loads(data)
-                
-                # Process the message based on type
-                if message_data.get("type") == "message":
-                    chat_logger.info(f"Received chat message from user {user_id} in session {session}")
-                    # Process message in a separate task to avoid blocking
-                    asyncio.create_task(process_chat_message(connection_id, message_data))
-                    
-                elif message_data.get("type") == "ping":
-                    # Respond to ping with a pong to keep the connection alive
-                    chat_logger.debug(f"Received ping from user {user_id} in session {session}")
-                    await connection_manager.send_message(
-                        connection_id,
-                        {
-                            "type": "pong",
-                            "timestamp": datetime.now().isoformat()
-                        }
-                    )
-                    
-                # Add any other message types here
-                    
-            except json.JSONDecodeError:
-                chat_logger.error(f"Invalid JSON received from user {user_id}: {data}")
-                await connection_manager.send_message(
-                    connection_id,
-                    {
-                        "type": "error",
-                        "error": "Invalid message format",
-                        "timestamp": datetime.now().isoformat()
-                    }
-                )
-                
-    except WebSocketDisconnect:
-        chat_logger.info(f"User {user_id} disconnected from chat websocket")
-    except Exception as e:
-        chat_logger.error(f"Error in websocket chat: {str(e)}", exc_info=True)
-    finally:
-        # Clean up resources
-        connection_manager.disconnect(connection_id)
-        
-        # Cancel monitoring tasks
-        if heartbeat_task:
-            heartbeat_task.cancel()
-        if connection_monitor_task:
-            connection_monitor_task.cancel()
-            
-        chat_logger.info(f"Cleaned up resources for {connection_id}")
-
-
 async def send_heartbeat(connection_id: str):
     """
     Send periodic heartbeat messages to keep the connection alive.
@@ -1087,3 +962,119 @@ async def monitor_connection_health(connection_id: str):
         pass
     except Exception as e:
         chat_logger.error(f"Error in connection monitor: {str(e)}", exc_info=True)
+
+
+# WebSocket Handler - This is the critical endpoint that must be registered properly
+@router.websocket("/ws/chat/{user_id}")
+async def websocket_chat(
+    websocket: WebSocket, 
+    user_id: str, 
+    session: str = None
+):
+    """
+    WebSocket endpoint for chat.
+    
+    Args:
+        websocket: The WebSocket connection
+        user_id: The user's ID
+        session: Optional session ID for managing multiple chat sessions
+    """
+    # Extract session from query parameters if not provided directly
+    if not session:
+        query_params = dict(websocket.query_params)
+        session = query_params.get("session", str(uuid.uuid4()))
+    
+    # Create a unique connection ID combining user_id and session
+    connection_id = f"{user_id}:{session}"
+    
+    # Initialize connection monitoring
+    connection_monitor_task = None
+    heartbeat_task = None
+    
+    try:
+        # Accept the connection
+        await connection_manager.connect(websocket, connection_id)
+        chat_logger.info(f"User {user_id} connected to chat websocket with session {session}")
+        
+        # Start monitoring tasks
+        heartbeat_task = asyncio.create_task(send_heartbeat(connection_id))
+        connection_monitor_task = asyncio.create_task(monitor_connection_health(connection_id))
+        
+        # Send initial connection acknowledgment
+        await connection_manager.send_message(
+            connection_id, 
+            {
+                "type": "connection_status",
+                "status": "connected",
+                "session": session,
+                "timestamp": datetime.now().isoformat()
+            }
+        )
+        
+        # Message processing loop
+        while True:
+            # Wait for messages with a reasonable timeout
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
+            except asyncio.TimeoutError:
+                # No message received in timeout period, send a ping to check connection
+                if connection_id in connection_manager.active_connections:
+                    try:
+                        await connection_manager.send_message(
+                            connection_id,
+                            {
+                                "type": "ping",
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
+                    except:
+                        # If ping fails, connection is probably dead
+                        chat_logger.warning(f"Ping failed for {connection_id}, closing connection")
+                        break
+                continue
+            
+            try:
+                # Parse the message
+                message_data = json.loads(data)
+                
+                # Process the message based on type
+                message_type = message_data.get("type")
+                
+                if message_type == "message":
+                    chat_logger.info(f"Received chat message from user {user_id} in session {session}")
+                    # Process message in a separate task to avoid blocking
+                    asyncio.create_task(process_chat_message(connection_id, message_data))
+                    
+                elif message_type == "ping":
+                    # Respond to ping with a pong to keep the connection alive
+                    chat_logger.debug(f"Received ping from user {user_id} in session {session}")
+                    await connection_manager.send_message(
+                        connection_id,
+                        {
+                            "type": "pong",
+                            "timestamp": datetime.now().isoformat()
+                        }
+                    )
+                else:
+                    # Log unhandled message types
+                    chat_logger.warning(f"Unhandled message type '{message_type}' from user {user_id}")
+                    
+            except json.JSONDecodeError:
+                chat_logger.error(f"Invalid JSON received from user {user_id}: {data}")
+                await send_error(connection_id, "Invalid message format")
+                
+    except WebSocketDisconnect:
+        chat_logger.info(f"User {user_id} disconnected from chat websocket")
+    except Exception as e:
+        chat_logger.error(f"Error in websocket chat: {str(e)}", exc_info=True)
+    finally:
+        # Clean up resources
+        connection_manager.disconnect(connection_id)
+        
+        # Cancel monitoring tasks
+        if heartbeat_task:
+            heartbeat_task.cancel()
+        if connection_monitor_task:
+            connection_monitor_task.cancel()
+            
+        chat_logger.info(f"Cleaned up resources for {connection_id}")
