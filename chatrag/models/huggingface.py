@@ -1,24 +1,29 @@
 import os
-import httpx
 import logging
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import asyncio
 import json
 
-from openai import OpenAI, APIError
 from .base import BaseLanguageModel
 from .token_manager import TokenManager
 from .utils import format_chat_history
 
 logger = logging.getLogger("huggingface_model")
 
+try:
+    from openai import OpenAI, APIError
+    OPENAI_CLIENT_AVAILABLE = True
+except ImportError:
+    OPENAI_CLIENT_AVAILABLE = False
+    logger.warning("openai not available. Install with 'pip install openai'")
+
 class HuggingFaceModel(BaseLanguageModel):
     """
-    Implementation of the BaseLanguageModel for OpenAI-compatible API endpoints.
-    Supports token rotation and automatic retry with different tokens.
+    Implementation of the BaseLanguageModel for HuggingFace models using the OpenAI client.
+    Ensures conversation roles properly alternate user/assistant/user/assistant.
     """
 
-    def __init__(self, model_id: str = "mistralai/Mistral-7B-Instruct-v0.2"):
+    def __init__(self, model_id: str = "google/gemma-2-2b-it"):
         """
         Initialize the HuggingFace model client.
         
@@ -26,9 +31,9 @@ class HuggingFaceModel(BaseLanguageModel):
             model_id: The model ID to use
         """
         self.model_id = model_id
-        self.base_url = os.environ.get("HF_API_BASE_URL", "https://api.openai.com/v1")
+        self.router_url = "https://router.huggingface.co/hf-inference/v1"
         self.max_context_length = 4000  # Maximum context length in tokens
-        self.timeout = 60  # Timeout in seconds for API calls
+        self.timeout = 120  # Timeout in seconds for API calls
         self.max_retries = 3  # Maximum number of retries with different tokens
         
         # Initialize token manager
@@ -38,14 +43,87 @@ class HuggingFaceModel(BaseLanguageModel):
             logger.warning("No HuggingFace API tokens available. Model will not function properly.")
         else:
             logger.info(f"Initialized HuggingFace model with {self.token_manager.token_count} tokens")
-
-    async def _create_client(self):
-        """Create an OpenAI client with the current token."""
-        token = self.token_manager.get_token()
-        if not token:
-            raise ValueError("No API tokens available")
             
-        return OpenAI(api_key=token, base_url=self.base_url, timeout=self.timeout)
+        # Check if OpenAI client is available
+        if not OPENAI_CLIENT_AVAILABLE:
+            logger.error("OpenAI library is not available. Install with 'pip install openai'")
+
+    def _create_openai_client(self, token: str):
+        """Create an OpenAI client configured for HF Inference API."""
+        if not OPENAI_CLIENT_AVAILABLE:
+            return None
+            
+        return OpenAI(
+            base_url=self.router_url,
+            api_key=token,
+            timeout=self.timeout
+        )
+
+    def _ensure_alternating_roles(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        Ensure the conversation roles alternate properly between user and assistant.
+        
+        Args:
+            messages: List of message dictionaries
+            
+        Returns:
+            List of formatted messages with proper role alternation
+        """
+        # Drop system messages entirely
+        messages = [msg for msg in messages if msg["role"] != "system"]
+        
+        # If no messages, add a default user message
+        if not messages:
+            return [{"role": "user", "content": "Hello"}]
+        
+        # Make sure the first message is from user
+        if messages[0]["role"] != "user":
+            # Insert a generic user message
+            messages.insert(0, {"role": "user", "content": "I need your assistance."})
+            
+        # Check message alternation and fix if needed
+        fixed_messages = [messages[0]]  # Start with the first message (user)
+        
+        for i in range(1, len(messages)):
+            prev_role = fixed_messages[-1]["role"]
+            curr_role = messages[i]["role"]
+            
+            # If roles don't alternate properly, insert a padding message
+            if prev_role == curr_role:
+                if curr_role == "user":
+                    # Insert assistant message between consecutive user messages
+                    fixed_messages.append({
+                        "role": "assistant", 
+                        "content": "I understand. Please continue."
+                    })
+                else:  # curr_role == "assistant"
+                    # Insert user message between consecutive assistant messages
+                    fixed_messages.append({
+                        "role": "user", 
+                        "content": "Please continue."
+                    })
+            
+            # Add the current message
+            fixed_messages.append(messages[i])
+        
+        # Make sure we end with an assistant message if the last message is from user
+        if fixed_messages[-1]["role"] == "user":
+            # This shouldn't happen in normal usage, but just in case
+            logger.warning("Last message is from user, which is unexpected in a completion scenario")
+        
+        return fixed_messages
+
+    def _prepare_rag_context(self, documents: List[str]) -> str:
+        """
+        Format RAG documents into a context string.
+        
+        Args:
+            documents: List of document strings
+            
+        Returns:
+            Formatted context string
+        """
+        return "\n\n".join([f"Document: {doc}" for doc in documents])
 
     async def generate(self, 
                  prompt: str, 
@@ -54,55 +132,64 @@ class HuggingFaceModel(BaseLanguageModel):
                  max_tokens: int = 1024,
                  context: Optional[List[Dict[str, Any]]] = None) -> str:
         """
-        Generate text using the HuggingFace API with token rotation.
+        Generate text using the HuggingFace chat completions API.
         """
-        # Format messages using our utility function
-        messages = format_chat_history(
-            messages=context or [],
-            system_prompt=system_prompt,
-            current_prompt=prompt
-        )
+        # Start with a simpler approach - just the user's prompt
+        # This is more reliable with models that have strict format requirements
+        messages = [{"role": "user", "content": prompt}]
+        
+        # If system prompt is provided, add it to the user message
+        if system_prompt:
+            messages[0]["content"] = f"{system_prompt}\n\n{prompt}"
+            
+        # If context is provided and not empty, use it instead, ensuring alternation
+        if context and len(context) > 0:
+            context_messages = format_chat_history(
+                messages=context,
+                current_prompt=prompt
+            )
+            messages = self._ensure_alternating_roles(context_messages)
         
         # Try with multiple tokens if needed
         for attempt in range(self.max_retries):
             try:
-                # Get a client with the current token
+                # Get a token
                 token = self.token_manager.get_token()
                 if not token:
                     return "Error: No API tokens available"
-                    
-                client = await self._create_client()
-                
-                # Call the API with a timeout
-                async def call_api():
-                    try:
-                        return await client.chat.completions.create(
-                            messages=messages,
-                            model=self.model_id,
-                            temperature=temperature,
-                            max_tokens=max_tokens
-                        )
-                    except (TypeError, AttributeError):
-                        # Fallback for older versions or if async is not supported
-                        return client.chat.completions.create(
-                            messages=messages,
-                            model=self.model_id,
-                            temperature=temperature,
-                            max_tokens=max_tokens
-                        )
                 
                 try:
-                    chat_completion = await asyncio.wait_for(call_api(), timeout=self.timeout)
+                    # Create OpenAI client
+                    client = self._create_openai_client(token)
+                    if not client:
+                        return "Error: OpenAI client not available"
+                    
+                    # Log the messages being sent
+                    logger.debug(f"Sending messages: {json.dumps(messages)}")
+                    
+                    # Make the API call
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            client.chat.completions.create,
+                            model=self.model_id,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        ),
+                        timeout=self.timeout
+                    )
+                    
                     # Report success
                     self.token_manager.report_success(token)
-                    return chat_completion.choices[0].message.content
+                    return response.choices[0].message.content
+                    
                 except asyncio.TimeoutError:
                     logger.error(f"API call timed out after {self.timeout} seconds")
                     self.token_manager.report_failure(token)
                     continue
                     
-            except APIError as e:
-                logger.error(f"API error with token {token[:5]}...: {str(e)}")
+            except Exception as e:
+                logger.error(f"API error with token {token[:5]}...: {str(e)}", exc_info=True)
                 self.token_manager.report_failure(token)
                 
                 # Check if we should retry
@@ -111,10 +198,6 @@ class HuggingFaceModel(BaseLanguageModel):
                     continue
                 else:
                     return f"Error: API request failed after {self.max_retries} attempts: {str(e)}"
-                    
-            except Exception as e:
-                logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-                return f"Error: {str(e)}"
                 
         return "Error: Failed to generate response after multiple attempts"
         
@@ -125,53 +208,66 @@ class HuggingFaceModel(BaseLanguageModel):
                            max_tokens: int = 1024,
                            context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
         """
-        Generate a streaming response using the HuggingFace API with token rotation.
+        Generate a streaming response using the HuggingFace chat completions API.
         """
-        # Format messages using our utility function
-        messages = format_chat_history(
-            messages=context or [],
-            system_prompt=system_prompt,
-            current_prompt=prompt
-        )
+        # Start with a simpler approach - just the user's prompt
+        messages = [{"role": "user", "content": prompt}]
+        
+        # If system prompt is provided, add it to the user message
+        if system_prompt:
+            messages[0]["content"] = f"{system_prompt}\n\n{prompt}"
+            
+        # If context is provided and not empty, use it instead, ensuring alternation
+        if context and len(context) > 0:
+            context_messages = format_chat_history(
+                messages=context,
+                current_prompt=prompt
+            )
+            messages = self._ensure_alternating_roles(context_messages)
         
         # Try with multiple tokens if needed
         for attempt in range(self.max_retries):
             try:
-                # Get a client with the current token
+                # Get a token
                 token = self.token_manager.get_token()
                 if not token:
                     yield "Error: No API tokens available"
                     return
-                    
-                client = await self._create_client()
                 
                 try:
-                    # Use streaming API - don't await the stream creation
+                    # Create OpenAI client
+                    client = self._create_openai_client(token)
+                    if not client:
+                        yield "Error: OpenAI client not available"
+                        return
+                    
+                    # Log the messages being sent
+                    logger.debug(f"Sending streaming messages: {json.dumps(messages)}")
+                        
+                    # Create a streaming response
                     stream = client.chat.completions.create(
-                        messages=messages,
                         model=self.model_id,
+                        messages=messages,
                         temperature=temperature,
                         max_tokens=max_tokens,
                         stream=True
                     )
                     
-                    # Process the stream - iterate over it directly
+                    # Stream the response
                     for chunk in stream:
                         if (hasattr(chunk.choices[0], 'delta') and 
                             hasattr(chunk.choices[0].delta, 'content') and 
-                            chunk.choices[0].delta.content is not None):
+                            chunk.choices[0].delta.content):
                             content = chunk.choices[0].delta.content
-                            logger.debug(f"Streaming chunk: {content}")
                             yield content
-                            # Small pause to allow for cooperative multitasking
-                            await asyncio.sleep(0)
+                            await asyncio.sleep(0)  # Allow for cooperative multitasking
                     
                     # Report success
                     self.token_manager.report_success(token)
                     return
                     
-                except (APIError, Exception) as e:
-                    logger.error(f"API error with token {token[:5]}...: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Streaming error: {str(e)}", exc_info=True)
                     self.token_manager.report_failure(token)
                     
                     # Check if we should retry
@@ -181,7 +277,7 @@ class HuggingFaceModel(BaseLanguageModel):
                     else:
                         yield f"Error: API streaming request failed after {self.max_retries} attempts: {str(e)}"
                         return
-                        
+                    
             except Exception as e:
                 logger.error(f"Unexpected error in streaming: {str(e)}", exc_info=True)
                 yield f"Error: {str(e)}"
@@ -197,69 +293,70 @@ class HuggingFaceModel(BaseLanguageModel):
                               max_tokens: int = 1024,
                               context: Optional[List[Dict[str, Any]]] = None) -> str:
         """
-        Generate text with RAG context using the HuggingFace API with token rotation.
+        Generate text with RAG context using the HuggingFace chat completions API.
         """
-        # Format messages using our utility function
-        messages = format_chat_history(
-            messages=context or [],
-            system_prompt=system_prompt,
-            current_prompt=prompt
-        )
+        # Format RAG context
+        rag_context = self._prepare_rag_context(documents)
         
-        # Add retrieved documents to the system prompt
+        # Start with a simple user message that includes the RAG context
+        messages = [{
+            "role": "user", 
+            "content": f"I need information about the following: {prompt}\n\nHere is relevant information to help you:\n\n{rag_context}"
+        }]
+        
+        # If system prompt is provided, incorporate it into the user message
         if system_prompt:
-            system_message = messages[0]
-            documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
-            system_message["content"] = f"{system_message['content']}\n\nRelevant context:\n{documents_text}"
-        else:
-            # If no system prompt, add documents as a system message
-            documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
-            system_message = {
-                "role": "system",
-                "content": f"You are a helpful assistant. Use the following information to answer the user's question:\n\n{documents_text}"
-            }
-            messages.insert(0, system_message)
+            messages[0]["content"] = f"{system_prompt}\n\n{messages[0]['content']}"
+        
+        # If context is provided and not empty, use it appropriately
+        if context and len(context) > 0:
+            # Add RAG context to the end of the last user message
+            context_messages = format_chat_history(
+                messages=context,
+                current_prompt=f"{prompt}\n\nHere is relevant information:\n\n{rag_context}"
+            )
+            messages = self._ensure_alternating_roles(context_messages)
         
         # Try with multiple tokens if needed
         for attempt in range(self.max_retries):
             try:
-                # Get a client with the current token
+                # Get a token
                 token = self.token_manager.get_token()
                 if not token:
                     return "Error: No API tokens available"
-                    
-                client = await self._create_client()
-                
-                # Call the API with a timeout
-                async def call_api():
-                    try:
-                        return await client.chat.completions.create(
-                            messages=messages,
-                            model=self.model_id,
-                            temperature=temperature,
-                            max_tokens=max_tokens
-                        )
-                    except (TypeError, AttributeError):
-                        # Fallback for older versions or if async is not supported
-                        return client.chat.completions.create(
-                            messages=messages,
-                            model=self.model_id,
-                            temperature=temperature,
-                            max_tokens=max_tokens
-                        )
                 
                 try:
-                    chat_completion = await asyncio.wait_for(call_api(), timeout=self.timeout)
+                    # Create OpenAI client
+                    client = self._create_openai_client(token)
+                    if not client:
+                        return "Error: OpenAI client not available"
+                    
+                    # Log the messages being sent
+                    logger.debug(f"Sending RAG messages: {json.dumps(messages)}")
+                    
+                    # Make the API call
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            client.chat.completions.create,
+                            model=self.model_id,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        ),
+                        timeout=self.timeout
+                    )
+                    
                     # Report success
                     self.token_manager.report_success(token)
-                    return chat_completion.choices[0].message.content
+                    return response.choices[0].message.content
+                    
                 except asyncio.TimeoutError:
                     logger.error(f"API call timed out after {self.timeout} seconds")
                     self.token_manager.report_failure(token)
                     continue
                     
-            except APIError as e:
-                logger.error(f"API error with token {token[:5]}...: {str(e)}")
+            except Exception as e:
+                logger.error(f"API error with token {token[:5]}...: {str(e)}", exc_info=True)
                 self.token_manager.report_failure(token)
                 
                 # Check if we should retry
@@ -268,10 +365,6 @@ class HuggingFaceModel(BaseLanguageModel):
                     continue
                 else:
                     return f"Error: API request failed after {self.max_retries} attempts: {str(e)}"
-                    
-            except Exception as e:
-                logger.error(f"Unexpected error: {str(e)}", exc_info=True)
-                return f"Error: {str(e)}"
                 
         return "Error: Failed to generate response after multiple attempts"
         
@@ -283,67 +376,73 @@ class HuggingFaceModel(BaseLanguageModel):
                                     max_tokens: int = 1024,
                                     context: Optional[List[Dict[str, Any]]] = None) -> AsyncGenerator[str, None]:
         """
-        Generate a streaming response with RAG context using the HuggingFace API with token rotation.
+        Generate a streaming response with RAG context using the HuggingFace chat completions API.
         """
-        # Format messages using our utility function
-        messages = format_chat_history(
-            messages=context or [],
-            system_prompt=system_prompt,
-            current_prompt=prompt
-        )
+        # Format RAG context
+        rag_context = self._prepare_rag_context(documents)
         
-        # Add retrieved documents to the system prompt
+        # Start with a simple user message that includes the RAG context
+        messages = [{
+            "role": "user", 
+            "content": f"I need information about the following: {prompt}\n\nHere is relevant information to help you:\n\n{rag_context}"
+        }]
+        
+        # If system prompt is provided, incorporate it into the user message
         if system_prompt:
-            system_message = messages[0]
-            documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
-            system_message["content"] = f"{system_message['content']}\n\nRelevant context:\n{documents_text}"
-        else:
-            # If no system prompt, add documents as a system message
-            documents_text = "\n\n".join([f"Document: {doc}" for doc in documents])
-            system_message = {
-                "role": "system",
-                "content": f"You are a helpful assistant. Use the following information to answer the user's question:\n\n{documents_text}"
-            }
-            messages.insert(0, system_message)
+            messages[0]["content"] = f"{system_prompt}\n\n{messages[0]['content']}"
+        
+        # If context is provided and not empty, use it appropriately
+        if context and len(context) > 0:
+            # Add RAG context to the end of the last user message
+            context_messages = format_chat_history(
+                messages=context,
+                current_prompt=f"{prompt}\n\nHere is relevant information:\n\n{rag_context}"
+            )
+            messages = self._ensure_alternating_roles(context_messages)
         
         # Try with multiple tokens if needed
         for attempt in range(self.max_retries):
             try:
-                # Get a client with the current token
+                # Get a token
                 token = self.token_manager.get_token()
                 if not token:
                     yield "Error: No API tokens available"
                     return
-                    
-                client = await self._create_client()
                 
                 try:
-                    # Use streaming API - don't await the stream creation
+                    # Create OpenAI client
+                    client = self._create_openai_client(token)
+                    if not client:
+                        yield "Error: OpenAI client not available"
+                        return
+                        
+                    # Log the messages being sent
+                    logger.debug(f"Sending RAG streaming messages: {json.dumps(messages)}")
+                    
+                    # Create a streaming response
                     stream = client.chat.completions.create(
-                        messages=messages,
                         model=self.model_id,
+                        messages=messages,
                         temperature=temperature,
                         max_tokens=max_tokens,
                         stream=True
                     )
                     
-                    # Process the stream - iterate over it directly
+                    # Stream the response
                     for chunk in stream:
                         if (hasattr(chunk.choices[0], 'delta') and 
                             hasattr(chunk.choices[0].delta, 'content') and 
-                            chunk.choices[0].delta.content is not None):
+                            chunk.choices[0].delta.content):
                             content = chunk.choices[0].delta.content
-                            logger.debug(f"Streaming RAG chunk: {content}")
                             yield content
-                            # Small pause to allow for cooperative multitasking
-                            await asyncio.sleep(0)
+                            await asyncio.sleep(0)  # Allow for cooperative multitasking
                     
                     # Report success
                     self.token_manager.report_success(token)
                     return
                     
-                except (APIError, Exception) as e:
-                    logger.error(f"API error with token {token[:5]}...: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Streaming error: {str(e)}", exc_info=True)
                     self.token_manager.report_failure(token)
                     
                     # Check if we should retry
@@ -353,7 +452,7 @@ class HuggingFaceModel(BaseLanguageModel):
                     else:
                         yield f"Error: API streaming request failed after {self.max_retries} attempts: {str(e)}"
                         return
-                        
+                    
             except Exception as e:
                 logger.error(f"Unexpected error in streaming: {str(e)}", exc_info=True)
                 yield f"Error: {str(e)}"
