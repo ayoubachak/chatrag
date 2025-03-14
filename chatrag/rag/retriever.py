@@ -10,9 +10,6 @@ from .base_retriever import BaseVectorStore
 class VectorStore(BaseVectorStore):
     """
     A simple in-memory vector store for document retrieval.
-    
-    For production use, consider using a dedicated vector database
-    like FAISS, Chroma, or Pinecone.
     """
     
     def __init__(self, storage_dir: str = "vector_store"):

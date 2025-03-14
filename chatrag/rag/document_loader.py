@@ -1,11 +1,12 @@
-import os
-from typing import List, Dict, Any, Optional, Union, Literal
 from pathlib import Path
-import tempfile
 import uuid
+import pandas as pd
+from typing import List, Dict, Any, Literal, Tuple
 from abc import ABC, abstractmethod
 import re
-import pandas as pd
+import numpy as np
+from collections import Counter
+
 
 class ChunkingStrategy(ABC):
     """
@@ -337,16 +338,6 @@ class SuperChunker(ChunkingStrategy):
             
         return chunks
     
-import os
-from typing import List, Dict, Any, Optional, Union, Literal, Tuple
-from pathlib import Path
-import tempfile
-import uuid
-from abc import ABC, abstractmethod
-import re
-import numpy as np
-from collections import Counter
-
 class QuantumChunker(ChunkingStrategy):
     """
     Highly advanced chunking strategy with intelligent boundary detection,

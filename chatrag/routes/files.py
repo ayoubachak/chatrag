@@ -156,7 +156,7 @@ async def process_file_background(file_path: str, user_id: str, file_id: str, or
                     "chunks": num_chunks,
                     "rag_type": rag_type,
                     "chunking_strategy": chunking_strategy,
-                    "vector_store_path": vector_store_path
+                    "vector_store_path": str(vector_store_path) if hasattr(vector_store_path, '__fspath__') else vector_store_path
                 }
             )
             notification_sent = True
@@ -177,7 +177,7 @@ async def process_file_background(file_path: str, user_id: str, file_id: str, or
                         "chunks": num_chunks,
                         "rag_type": rag_type,
                         "chunking_strategy": chunking_strategy,
-                        "vector_store_path": vector_store_path
+                        "vector_store_path": str(vector_store_path) if hasattr(vector_store_path, '__fspath__') else vector_store_path
                     }
                 )
                 files_logger.info(f"Notification sent to user {user_id}")
